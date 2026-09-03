@@ -18,6 +18,11 @@ def format_date_ja(value) -> str:
     return pd.Timestamp(value).strftime("%Y年%m月%d日")
 
 
+def format_month_ja(value) -> str:
+    timestamp = pd.Timestamp(value)
+    return f"{timestamp.year}年{timestamp.month}月"
+
+
 def normalize_prices(raw: pd.DataFrame) -> pd.DataFrame:
     """Return a date-indexed OHLC frame, accepting yfinance or ordinary CSV data."""
     df = raw.copy()
@@ -129,6 +134,29 @@ def classify_company_size(market_cap) -> str:
     return "小型（時価総額1,000億円未満）"
 
 
+def get_nukazuke_stage(longest_days: int) -> tuple[Path, str]:
+    asset_dir = Path(__file__).with_name("assets")
+    if longest_days <= 30:
+        return asset_dir / "nukazuke-30.png", "浅漬かり（30日以下）"
+    if longest_days <= 60:
+        return asset_dir / "nukazuke-60.png", "中漬かり（60日以下）"
+    return asset_dir / "nukazuke-90.png", "深漬かり（90日級）"
+
+
+def render_nukazuke_summary(streaks: pd.DataFrame) -> None:
+    longest_days = int(streaks["下回った日数"].max())
+    illustration, stage_label = get_nukazuke_stage(longest_days)
+    with st.container(key="nukazuke_summary"):
+        count_col, longest_col, illustration_col = st.columns([1, 1, 1.15], gap="small")
+        count_col.metric("塩漬け", f"{len(streaks)}回")
+        longest_col.metric("最長塩漬け", f"{longest_days}日")
+        illustration_col.image(
+            illustration,
+            caption=stage_label,
+            width=195,
+        )
+
+
 def render_company_info(company_name: str, ticker: str, info: dict) -> None:
     st.subheader("企業情報・会社規模")
     market_cap = info.get("marketCap")
@@ -229,6 +257,64 @@ st.markdown(
     <style>
     .st-key-mobile_filters { display: none; }
     .st-key-mobile_results_table { display: none; }
+    .st-key-nukazuke_summary {
+        max-width: 680px;
+    }
+    .st-key-nukazuke_summary img {
+        max-width: 100%;
+        height: auto;
+    }
+    .st-key-nukazuke_summary [data-testid="stMetricLabel"] p {
+        font-size: 1.5rem !important;
+        font-weight: 700 !important;
+        line-height: 1.25;
+        text-align: center;
+    }
+    .st-key-nukazuke_summary [data-testid="stMetricLabel"] {
+        justify-content: center;
+        width: 100%;
+    }
+    .st-key-nukazuke_summary [data-testid="stMetric"] {
+        width: fit-content;
+        min-width: 158px;
+        padding: 1rem 1.25rem;
+        background: #dedede;
+    }
+    .st-key-nukazuke_summary [data-testid="stMetricValue"] {
+        justify-content: center;
+        text-align: center;
+    }
+    .app-title {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        width: fit-content;
+        margin: 0 0 1.4rem;
+        font-family: "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif;
+        font-size: clamp(2.25rem, 4vw, 3.25rem);
+        font-weight: 900;
+        line-height: 1.25;
+        letter-spacing: 0.03em;
+        color: #6f451f;
+        text-shadow:
+            0 3px 0 #f2d49b,
+            2px 5px 0 rgba(75, 48, 22, 0.12);
+    }
+    .app-title::before,
+    .app-title::after {
+        font-size: 0.72em;
+        filter: drop-shadow(0 2px 1px rgba(75, 48, 22, 0.18));
+    }
+    .app-title::before { content: "🥒"; transform: rotate(-12deg); }
+    .app-title::after { content: "🥒"; transform: rotate(12deg); }
+    .app-subtitle {
+        max-width: 680px;
+        margin: -1rem 0 2.5rem;
+        color: #111111;
+        font-size: 0.95rem;
+        font-weight: 500;
+        text-align: center;
+    }
     .stAppViewBlockContainer { padding-bottom: 5rem; }
     .app-footer {
         position: fixed;
@@ -244,9 +330,19 @@ st.markdown(
     }
     @media (max-width: 768px) {
         .st-key-mobile_filters { display: block; }
-        h1 {
-            font-size: clamp(1.7rem, 8vw, 2.25rem) !important;
+        .st-key-nukazuke_summary {
+            max-width: 100%;
+        }
+        .app-title {
+            gap: 0.2rem;
+            margin-bottom: 1.1rem;
+            font-size: clamp(1.45rem, 6.3vw, 2rem);
             white-space: nowrap;
+        }
+        .app-subtitle {
+            max-width: 100%;
+            margin-top: -0.75rem;
+            font-size: 0.9rem;
         }
         .st-key-mobile_use_current_price {
             width: fit-content;
@@ -271,7 +367,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("塩漬け日数チェッカー")
+st.markdown(
+    '<div class="app-title" role="heading" aria-level="1">塩漬け日数チェッカー</div>',
+    unsafe_allow_html=True,
+)
 
 with st.container(key="mobile_filters"):
     st.header("検索条件")
@@ -283,7 +382,12 @@ with st.container(key="mobile_filters"):
         current_price_after_dates=True,
     )
 
-st.caption("入力した国内証券コードの株価が、指定価格以下だった連続期間を探します。")
+st.markdown(
+    '<div class="app-subtitle">'
+    "購入しようとしている株価が、過去に何日塩漬けしたかが分かります。"
+    "</div>",
+    unsafe_allow_html=True,
+)
 st.markdown(
     '<div class="app-footer">制作者：木星在住　'
     '<a href="https://x.com/mokuseidayo" target="_blank">Twitter</a></div>',
@@ -323,13 +427,13 @@ if run:
         if use_current_price:
             st.info(f"現在の株価（直近取引日の終値）：{threshold:,.0f}円を基準にしています。")
         st.subheader(
-            f"{format_date_ja(start_date)}から{format_date_ja(end_date)}まで"
-            f"{company_name}が{threshold:,.0f}円以下だった期間"
+            f"{format_month_ja(start_date)}から{format_month_ja(end_date)}まで"
+            f"{company_name}が{threshold:,.0f}円以下の塩漬け期間"
         )
         if streaks.empty:
             st.warning("該当する取引日はありませんでした。")
         else:
-            st.metric("下回った回数", f"{len(streaks)}回")
+            render_nukazuke_summary(streaks)
             display_streaks = streaks.copy()
             display_streaks["開始日"] = display_streaks["開始日"].map(format_date_ja)
             display_streaks["終了日"] = display_streaks["終了日"].map(format_date_ja)
@@ -376,17 +480,24 @@ if run:
                     column_config={
                         "開始日": st.column_config.TextColumn(width="small"),
                         "終了日": st.column_config.TextColumn(width="small"),
-                        "下回った日数": st.column_config.TextColumn(width="small"),
-                        "期間中最安値（円）": st.column_config.TextColumn(width="small"),
-                        next_high_column: st.column_config.TextColumn(width="medium"),
+                        "下回った日数": st.column_config.TextColumn(
+                            "塩漬日数", width="small"
+                        ),
+                        "期間中最安値（円）": st.column_config.TextColumn(
+                            "塩漬中最安値", width="small"
+                        ),
+                        next_high_column: st.column_config.TextColumn(
+                            "塩漬後の最高値", width="medium"
+                        ),
                     },
                     key="desktop_streaks",
                 )
 
             with st.container(key="mobile_results_table"):
                 mobile_column_names = {
-                    "下回った日数": "連続下落",
-                    "期間中最安値（円）": "最安値",
+                    "下回った日数": "塩漬日数",
+                    "期間中最安値（円）": "塩漬中最安値",
+                    next_high_column: "塩漬後の最高値",
                 }
                 mobile_display = display_streaks.drop(columns=["終了日"]).rename(
                     columns=mobile_column_names
@@ -404,9 +515,9 @@ if run:
                     height=table_height,
                     column_config={
                         "開始日": st.column_config.TextColumn(width=145),
-                        "連続下落": st.column_config.TextColumn(width="small"),
-                        "最安値": st.column_config.TextColumn(width="small"),
-                        next_high_column: st.column_config.TextColumn(width="medium"),
+                        "塩漬日数": st.column_config.TextColumn(width="small"),
+                        "塩漬中最安値": st.column_config.TextColumn(width="small"),
+                        "塩漬後の最高値": st.column_config.TextColumn(width="medium"),
                     },
                     key="mobile_streaks",
                 )
