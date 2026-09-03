@@ -137,10 +137,10 @@ def classify_company_size(market_cap) -> str:
 def get_nukazuke_stage(longest_days: int) -> tuple[Path, str]:
     asset_dir = Path(__file__).with_name("assets")
     if longest_days <= 30:
-        return asset_dir / "nukazuke-30.png", "浅漬かり（30日以下）"
+        return asset_dir / "nukazuke-pixel-30.png", "浅漬かり（30日以下）"
     if longest_days <= 60:
-        return asset_dir / "nukazuke-60-v2.png", "中漬かり（60日以下）"
-    return asset_dir / "nukazuke-90-v2.png", "深漬かり（90日級）"
+        return asset_dir / "nukazuke-pixel-60.png", "中漬かり（60日以下）"
+    return asset_dir / "nukazuke-pixel-90.png", "深漬かり（90日級）"
 
 
 def render_nukazuke_summary(streaks: pd.DataFrame) -> None:
