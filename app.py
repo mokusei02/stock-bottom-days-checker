@@ -139,8 +139,8 @@ def get_nukazuke_stage(longest_days: int) -> tuple[Path, str]:
     if longest_days <= 30:
         return asset_dir / "nukazuke-30.png", "浅漬かり（30日以下）"
     if longest_days <= 60:
-        return asset_dir / "nukazuke-60.png", "中漬かり（60日以下）"
-    return asset_dir / "nukazuke-90.png", "深漬かり（90日級）"
+        return asset_dir / "nukazuke-60-v2.png", "中漬かり（60日以下）"
+    return asset_dir / "nukazuke-90-v2.png", "深漬かり（90日級）"
 
 
 def render_nukazuke_summary(streaks: pd.DataFrame) -> None:
@@ -332,6 +332,57 @@ st.markdown(
         .st-key-mobile_filters { display: block; }
         .st-key-nukazuke_summary {
             max-width: 100%;
+        }
+        .st-key-nukazuke_summary [data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: center;
+            gap: 0.5rem !important;
+        }
+        .st-key-nukazuke_summary [data-testid="stColumn"] {
+            flex: 1 1 0 !important;
+            width: 0 !important;
+            min-width: 0 !important;
+        }
+        .st-key-nukazuke_summary [data-testid="stColumn"]:nth-child(1),
+        .st-key-nukazuke_summary [data-testid="stColumn"]:nth-child(2) {
+            flex: 0 1 30% !important;
+            width: 30% !important;
+        }
+        .st-key-nukazuke_summary [data-testid="stColumn"]:nth-child(3) {
+            flex: 0 1 36% !important;
+            width: 36% !important;
+        }
+        .st-key-nukazuke_summary [data-testid="stMetric"] {
+            width: 100%;
+            min-width: 0;
+            padding: 0.75rem 0.2rem;
+        }
+        .st-key-nukazuke_summary [data-testid="stMetricLabel"] p {
+            font-size: clamp(0.8rem, 3.7vw, 1rem) !important;
+            white-space: nowrap;
+        }
+        .st-key-nukazuke_summary [data-testid="stMetricValue"] {
+            font-size: clamp(1.6rem, 7vw, 2rem) !important;
+        }
+        .st-key-nukazuke_summary [data-testid="stImage"] {
+            width: 100% !important;
+            max-width: 100% !important;
+            text-align: center;
+        }
+        .st-key-nukazuke_summary [data-testid="stImage"] > div,
+        .st-key-nukazuke_summary [data-testid="stImage"] figure {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+        .st-key-nukazuke_summary [data-testid="stImage"] img {
+            width: 100% !important;
+            max-width: 100% !important;
+            object-fit: contain;
+        }
+        .st-key-nukazuke_summary [data-testid="stImage"] small {
+            font-size: clamp(0.68rem, 2.8vw, 0.8rem);
+            white-space: nowrap;
         }
         .app-title {
             gap: 0.2rem;
