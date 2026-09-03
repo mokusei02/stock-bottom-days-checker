@@ -7,6 +7,7 @@ from pathlib import Path
 import altair as alt
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 
@@ -193,8 +194,13 @@ def render_search_controls(
         if show_end_date
         else date.today()
     )
+    latest_start_date = (pd.Timestamp(end_date) - pd.DateOffset(months=1)).date()
     start_date = st.date_input(
-        start_date_label, value=start_date_value, key=f"{key_prefix}_start"
+        start_date_label,
+        value=start_date_value,
+        max_value=latest_start_date,
+        key=f"{key_prefix}_start",
+        help="検索期間が1か月以上になる日付を指定してください。",
     )
     if current_price_after_dates:
         use_current_price = st.checkbox(
@@ -207,6 +213,17 @@ def render_search_controls(
 
 
 st.set_page_config(page_title="底値日数チェッカー", page_icon="📉", layout="wide")
+components.html(
+    """
+    <script>
+    for (const page of [window.parent.document, window.top.document]) {
+        page.documentElement.lang = "ja";
+        page.body?.setAttribute("lang", "ja");
+    }
+    </script>
+    """,
+    height=0,
+)
 st.markdown(
     """
     <style>
