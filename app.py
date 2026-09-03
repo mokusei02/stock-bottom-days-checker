@@ -87,7 +87,7 @@ def get_company_name(ticker: str) -> str:
         return ticker.removesuffix(".T")
 
 
-def render_search_controls(key_prefix: str):
+def render_search_controls(key_prefix: str, show_end_date: bool = True):
     security_code = st.text_input(
         "証券コード", value="7201", max_chars=12, key=f"{key_prefix}_code"
     ).strip().upper()
@@ -98,7 +98,11 @@ def render_search_controls(key_prefix: str):
         step=1.0,
         key=f"{key_prefix}_threshold",
     )
-    end_date = st.date_input("終了日", value=date.today(), key=f"{key_prefix}_end")
+    end_date = (
+        st.date_input("終了日", value=date.today(), key=f"{key_prefix}_end")
+        if show_end_date
+        else date.today()
+    )
     start_date = st.date_input(
         "開始日", value=date(2000, 1, 4), key=f"{key_prefix}_start"
     )
@@ -124,7 +128,7 @@ st.markdown(
 
 with st.container(key="mobile_filters"):
     st.header("検索条件")
-    mobile_values = render_search_controls("mobile")
+    mobile_values = render_search_controls("mobile", show_end_date=False)
 
 st.title("底値日数チェッカー")
 st.caption("入力した国内証券コードの株価が、指定価格以下だった連続期間を探します。")
