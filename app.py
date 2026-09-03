@@ -97,7 +97,10 @@ def load_company_options() -> list[str]:
 
 
 def render_search_controls(
-    key_prefix: str, show_end_date: bool = True, start_date_label: str = "開始日"
+    key_prefix: str,
+    show_end_date: bool = True,
+    start_date_label: str = "開始日",
+    start_date_value: date = date(2000, 1, 4),
 ):
     company_options = load_company_options()
     default_index = next(
@@ -126,7 +129,7 @@ def render_search_controls(
         else date.today()
     )
     start_date = st.date_input(
-        start_date_label, value=date(2000, 1, 4), key=f"{key_prefix}_start"
+        start_date_label, value=start_date_value, key=f"{key_prefix}_start"
     )
     run = st.button(
         "集計する", type="primary", use_container_width=True, key=f"{key_prefix}_run"
@@ -154,7 +157,10 @@ st.markdown(
 with st.container(key="mobile_filters"):
     st.header("検索条件")
     mobile_values = render_search_controls(
-        "mobile", show_end_date=False, start_date_label="検索開始日"
+        "mobile",
+        show_end_date=False,
+        start_date_label="検索開始日",
+        start_date_value=date(2010, 1, 1),
     )
 
 st.title("底値日数チェッカー")
