@@ -227,9 +227,23 @@ st.markdown(
     }
     @media (max-width: 768px) {
         .st-key-mobile_filters { display: block; }
+        h1 {
+            font-size: clamp(1.7rem, 8vw, 2.25rem) !important;
+            white-space: nowrap;
+        }
         .st-key-mobile_use_current_price {
             width: fit-content;
             margin-left: auto;
+        }
+        .st-key-mobile_use_current_price [data-testid="stWidgetLabel"] p {
+            font-size: 2rem !important;
+            font-weight: 700 !important;
+            line-height: 1.2;
+        }
+        .st-key-mobile_use_current_price [data-testid="stCheckbox"] label > div:first-of-type {
+            transform: scale(2);
+            transform-origin: center;
+            margin-right: 0.75rem;
         }
         .st-key-desktop_results_table { display: none; }
         .st-key-mobile_results_table { display: block; }
