@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
+
+import altair as alt
+import pandas as pd
+import streamlit as st
+import yfinance as yf
+
+
+LABELS = {"Close": "終値", "Low": "安値", "Open": "始値", "High": "高値"}
+
+
+def format_date_ja(value) -> str:
+    return pd.Timestamp(value).strftime("%Y年%m月%d日")
+
+
+def normalize_prices(raw: pd.DataFrame) -> pd.DataFrame:
+    """Return a date-indexed OHLC frame, accepting yfinance or ordinary CSV data."""
+    df = raw.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df.columns = [str(c).strip().title() for c in df.columns]
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.set_index("Date")
+    df.index = pd.to_datetime(df.index, errors="coerce").tz_localize(None)
+    df = df[~df.index.isna()].sort_index()
+    for col in LABELS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def find_streaks(df: pd.DataFrame, column: str, threshold: float) -> pd.DataFrame:
+    prices = df[column].dropna()
+    below = prices <= threshold
+    group = below.ne(below.shift()).cumsum()
+    next_high_column = f"次の{threshold:,.0f}円までの最高値（円）"
+    rows = []
+    for _, segment in prices[below].groupby(group[below]):
+        start, end = segment.index[0], segment.index[-1]
+        rows.append(
+            {
+                "開始日": start.date(),
+                "終了日": end.date(),
+                "下回った日数": (end - start).days + 1,
+                "期間中最安値（円）": round(float(segment.min()), 2),
+                "_開始日時": start,
+                "_終了日時": end,
+            }
+        )
+    if not rows:
+        return pd.DataFrame(columns=["開始日", "終了日", "下回った日数", "期間中最安値（円）", next_high_column])
+
+    high_prices = df["High"].dropna() if "High" in df.columns else prices
+    for index, row in enumerate(rows):
+        next_start = rows[index + 1]["_開始日時"] if index + 1 < len(rows) else None
+        gap = high_prices[high_prices.index > row["_終了日時"]]
+        if next_start is not None:
+            gap = gap[gap.index < next_start]
+        row[next_high_column] = round(float(gap.max()), 2) if not gap.empty else None
+
+    result = pd.DataFrame(rows).sort_values(
+        "開始日", ascending=False
+    ).reset_index(drop=True)
+    result = result.drop(columns=["_開始日時", "_終了日時"])
+    return result
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def download_prices(ticker: str, start: date, end: date) -> pd.DataFrame:
+    # yfinance's end is exclusive.
+    raw = yf.download(ticker, start=start, end=end + pd.Timedelta(days=1), progress=False, auto_adjust=False)
+    if raw.empty:
+        raise RuntimeError("株価データを取得できませんでした。")
+    return normalize_prices(raw)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_company_name(ticker: str) -> str:
+    try:
+        info = yf.Ticker(ticker).get_info()
+        return info.get("longName") or info.get("shortName") or ticker.removesuffix(".T")
+    except Exception:
+        return ticker.removesuffix(".T")
+
+
+st.set_page_config(page_title="底値日数チェッカー", page_icon="📉", layout="wide")
+st.title("底値日数チェッカー")
+st.caption("入力した国内証券コードの株価が、指定価格以下だった連続期間を探します。")
+st.markdown("制作者：木星在住　[Twitter](https://x.com/mokuseidayo)")
+
+with st.sidebar:
+    st.header("検索条件")
+    security_code = st.text_input("証券コード", value="7201", max_chars=12).strip().upper()
+    threshold = st.number_input("XX円（この価格以下）", min_value=0.0, value=320.0, step=1.0)
+    label = "安値"
+    column = "Low"
+    end_date = st.date_input("終了日", value=date.today())
+    default_start = date(2000, 1, 4)
+    start_date = st.date_input("開始日", value=default_start)
+    run = st.button("集計する", type="primary", use_container_width=True)
+
+if run:
+    if not security_code:
+        st.error("証券コードを入力してください。")
+        st.stop()
+    if start_date > end_date:
+        st.error("開始日は終了日以前にしてください。")
+        st.stop()
+    try:
+        with st.spinner("株価データを準備しています…"):
+            ticker = security_code if "." in security_code else f"{security_code}.T"
+            prices = download_prices(ticker, start_date, end_date)
+            company_name = get_company_name(ticker)
+        if column not in prices.columns:
+            raise ValueError(f"{label}列がデータにありません。")
+
+        streaks = find_streaks(prices, column, threshold)
+        st.subheader(
+            f"{format_date_ja(start_date)}から{format_date_ja(end_date)}まで"
+            f"{company_name}が{threshold:,.0f}円以下だった期間"
+        )
+        if streaks.empty:
+            st.warning("該当する取引日はありませんでした。")
+        else:
+            st.metric("下回った回数", f"{len(streaks)}回")
+            display_streaks = streaks.copy()
+            display_streaks["開始日"] = display_streaks["開始日"].map(format_date_ja)
+            display_streaks["終了日"] = display_streaks["終了日"].map(format_date_ja)
+            display_streaks["下回った日数"] = display_streaks["下回った日数"].map(
+                lambda value: f"{int(value)}日"
+            )
+            display_streaks["期間中最安値（円）"] = display_streaks[
+                "期間中最安値（円）"
+            ].map(
+                lambda value: f"{Decimal(str(value)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)}円"
+            )
+            next_high_column = f"次の{threshold:,.0f}円までの最高値（円）"
+            display_streaks[next_high_column] = display_streaks[next_high_column].map(
+                lambda value: "—"
+                if pd.isna(value)
+                else f"{Decimal(str(value)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)}円"
+            )
+            cell_styles = pd.DataFrame(
+                "", index=display_streaks.index, columns=display_streaks.columns
+            )
+            cell_styles.loc[
+                streaks["下回った日数"].gt(30), "下回った日数"
+            ] = "color: #DC2626; font-weight: 700;"
+            cell_styles.loc[
+                streaks["期間中最安値（円）"].lt(threshold * 0.9),
+                "期間中最安値（円）",
+            ] = "color: #DC2626; font-weight: 700;"
+            cell_styles.loc[
+                streaks[next_high_column].gt(threshold * 1.1), next_high_column
+            ] = "color: #2563EB; font-weight: 700;"
+            styled_streaks = display_streaks.style.apply(
+                lambda _: cell_styles, axis=None
+            )
+            table_height = 38 * (len(streaks) + 1) + 4
+            st.dataframe(
+                styled_streaks,
+                hide_index=True,
+                width=850,
+                height=table_height,
+                column_config={
+                    "開始日": st.column_config.TextColumn(width="small"),
+                    "終了日": st.column_config.TextColumn(width="small"),
+                    "下回った日数": st.column_config.TextColumn(width="small"),
+                    "期間中最安値（円）": st.column_config.TextColumn(width="small"),
+                    next_high_column: st.column_config.TextColumn(width="medium"),
+                },
+            )
+            csv = display_streaks.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("結果をCSVで保存", csv, "nissan_price_streaks.csv", "text/csv")
+
+        chart = prices[[column]].dropna().reset_index()
+        chart.columns = ["日付", "株価"]
+        chart["基準以下"] = chart["株価"] <= threshold
+        changes = chart["基準以下"].ne(chart["基準以下"].shift()).cumsum()
+        chart["連続区間"] = changes.where(chart["基準以下"])
+
+        base = alt.Chart(chart).encode(
+            x=alt.X(
+                "日付:T",
+                title="年",
+                axis=alt.Axis(format="%Y年", tickCount="year", labelAngle=0),
+                scale=alt.Scale(
+                    domain=[pd.Timestamp(start_date), pd.Timestamp(end_date)]
+                ),
+            ),
+            y=alt.Y("株価:Q", title=f"{label}（円）", scale=alt.Scale(zero=False)),
+            tooltip=[
+                alt.Tooltip("日付:T", title="日付", format="%Y年%m月%d日"),
+                alt.Tooltip("株価:Q", title=f"{label}（円）", format=",.2f"),
+            ],
+        )
+        normal_line = base.mark_line(color="#2563EB", strokeWidth=2)
+        below = base.transform_filter(alt.datum["基準以下"] == True)
+        below_line = below.mark_line(color="#DC2626", strokeWidth=3).encode(
+            detail="連続区間:N"
+        )
+        below_points = below.mark_circle(color="#DC2626", size=45)
+        threshold_line = alt.Chart(pd.DataFrame({"基準価格": [threshold]})).mark_rule(
+            color="#DC2626", strokeDash=[6, 4], opacity=0.65
+        ).encode(y="基準価格:Q")
+        st.altair_chart(
+            (normal_line + below_line + below_points + threshold_line).properties(height=420),
+            use_container_width=True,
+        )
+    except Exception as exc:
+        st.error(f"処理できませんでした: {exc}")
+        st.caption("証券コードとインターネット接続をご確認のうえ、もう一度お試しください。")
