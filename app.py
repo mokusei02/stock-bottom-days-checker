@@ -79,6 +79,20 @@ def download_prices(ticker: str, start: date, end: date) -> pd.DataFrame:
     return normalize_prices(raw)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def get_current_price(ticker: str) -> float:
+    raw = yf.download(
+        ticker, period="5d", progress=False, auto_adjust=False
+    )
+    prices = normalize_prices(raw)
+    if prices.empty or "Close" not in prices.columns:
+        raise RuntimeError("現在の株価を取得できませんでした。")
+    closes = prices["Close"].dropna()
+    if closes.empty:
+        raise RuntimeError("現在の株価を取得できませんでした。")
+    return float(closes.iloc[-1])
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_company_name(ticker: str) -> str:
     try:
@@ -123,6 +137,9 @@ def render_search_controls(
         step=1,
         key=f"{key_prefix}_threshold",
     )
+    use_current_price = st.checkbox(
+        "現在の株価", value=False, key=f"{key_prefix}_use_current_price"
+    )
     end_date = (
         st.date_input("終了日", value=date.today(), key=f"{key_prefix}_end")
         if show_end_date
@@ -134,7 +151,7 @@ def render_search_controls(
     run = st.button(
         "集計する", type="primary", use_container_width=True, key=f"{key_prefix}_run"
     )
-    return security_code, threshold, start_date, end_date, run
+    return security_code, threshold, use_current_price, start_date, end_date, run
 
 
 st.set_page_config(page_title="底値日数チェッカー", page_icon="📉", layout="wide")
@@ -172,9 +189,9 @@ with st.sidebar:
     desktop_values = render_search_controls("desktop")
 
 if mobile_values[-1]:
-    security_code, threshold, start_date, end_date, run = mobile_values
+    security_code, threshold, use_current_price, start_date, end_date, run = mobile_values
 else:
-    security_code, threshold, start_date, end_date, run = desktop_values
+    security_code, threshold, use_current_price, start_date, end_date, run = desktop_values
 label = "安値"
 column = "Low"
 
@@ -188,12 +205,16 @@ if run:
     try:
         with st.spinner("株価データを準備しています…"):
             ticker = security_code if "." in security_code else f"{security_code}.T"
+            if use_current_price:
+                threshold = get_current_price(ticker)
             prices = download_prices(ticker, start_date, end_date)
             company_name = get_company_name(ticker)
         if column not in prices.columns:
             raise ValueError(f"{label}列がデータにありません。")
 
         streaks = find_streaks(prices, column, threshold)
+        if use_current_price:
+            st.info(f"現在の株価（直近取引日の終値）：{threshold:,.0f}円を基準にしています。")
         st.subheader(
             f"{format_date_ja(start_date)}から{format_date_ja(end_date)}まで"
             f"{company_name}が{threshold:,.0f}円以下だった期間"
