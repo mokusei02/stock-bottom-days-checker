@@ -250,17 +250,17 @@ st.markdown(
         }
         .st-key-mobile_use_current_price {
             width: fit-content;
-            margin-left: auto;
+            margin: 0.75rem 0 1rem auto;
         }
         .st-key-mobile_use_current_price [data-testid="stWidgetLabel"] p {
-            font-size: 2rem !important;
+            font-size: 1.5rem !important;
             font-weight: 700 !important;
             line-height: 1.2;
         }
         .st-key-mobile_use_current_price [data-testid="stCheckbox"] label > div:first-of-type {
-            transform: scale(2);
+            transform: scale(1.5);
             transform-origin: center;
-            margin-right: 0.75rem;
+            margin-right: 0.5rem;
         }
         .st-key-desktop_results_table { display: none; }
         .st-key-mobile_results_table { display: block; }
