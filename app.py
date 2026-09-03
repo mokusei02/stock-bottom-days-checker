@@ -212,7 +212,7 @@ def render_search_controls(
     return security_code, threshold, use_current_price, start_date, end_date, run
 
 
-st.set_page_config(page_title="底値日数チェッカー", page_icon="📉", layout="wide")
+st.set_page_config(page_title="塩漬け日数チェッカー", page_icon="📉", layout="wide")
 components.html(
     """
     <script>
@@ -271,7 +271,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("底値日数チェッカー")
+st.title("塩漬け日数チェッカー")
 
 with st.container(key="mobile_filters"):
     st.header("検索条件")
