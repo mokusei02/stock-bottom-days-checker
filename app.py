@@ -95,9 +95,9 @@ def render_search_controls(
     ).strip().upper()
     threshold = st.number_input(
         "XX円（この価格以下）",
-        min_value=0.0,
-        value=320.0,
-        step=1.0,
+        min_value=0,
+        value=320,
+        step=1,
         key=f"{key_prefix}_threshold",
     )
     end_date = (
@@ -230,8 +230,16 @@ if run:
                 )
 
             with st.container(key="mobile_results_table"):
-                mobile_display = display_streaks.drop(columns=["終了日"])
-                mobile_styles = cell_styles.drop(columns=["終了日"])
+                mobile_column_names = {
+                    "下回った日数": "連続下落",
+                    "期間中最安値（円）": "最安値",
+                }
+                mobile_display = display_streaks.drop(columns=["終了日"]).rename(
+                    columns=mobile_column_names
+                )
+                mobile_styles = cell_styles.drop(columns=["終了日"]).rename(
+                    columns=mobile_column_names
+                )
                 styled_mobile = mobile_display.style.apply(
                     lambda _: mobile_styles, axis=None
                 )
@@ -242,8 +250,8 @@ if run:
                     height=table_height,
                     column_config={
                         "開始日": st.column_config.TextColumn(width=145),
-                        "下回った日数": st.column_config.TextColumn(width="small"),
-                        "期間中最安値（円）": st.column_config.TextColumn(width="small"),
+                        "連続下落": st.column_config.TextColumn(width="small"),
+                        "最安値": st.column_config.TextColumn(width="small"),
                         next_high_column: st.column_config.TextColumn(width="medium"),
                     },
                     key="mobile_streaks",
