@@ -117,8 +117,11 @@ st.markdown(
     """
     <style>
     .st-key-mobile_filters { display: none; }
+    .st-key-mobile_results_table { display: none; }
     @media (max-width: 768px) {
         .st-key-mobile_filters { display: block; }
+        .st-key-desktop_results_table { display: none; }
+        .st-key-mobile_results_table { display: block; }
         section[data-testid="stSidebar"] { display: none; }
     }
     </style>
@@ -193,29 +196,54 @@ if run:
                 streaks["下回った日数"].gt(30), "下回った日数"
             ] = "color: #DC2626; font-weight: 700;"
             cell_styles.loc[
+                streaks["下回った日数"].le(7), "下回った日数"
+            ] = "color: #2563EB; font-weight: 700;"
+            cell_styles.loc[
                 streaks["期間中最安値（円）"].lt(threshold * 0.9),
                 "期間中最安値（円）",
             ] = "color: #DC2626; font-weight: 700;"
             cell_styles.loc[
                 streaks[next_high_column].gt(threshold * 1.1), next_high_column
             ] = "color: #2563EB; font-weight: 700;"
-            styled_streaks = display_streaks.style.apply(
-                lambda _: cell_styles, axis=None
-            )
             table_height = 38 * (len(streaks) + 1) + 4
-            st.dataframe(
-                styled_streaks,
-                hide_index=True,
-                width=850,
-                height=table_height,
-                column_config={
-                    "開始日": st.column_config.TextColumn(width="small"),
-                    "終了日": st.column_config.TextColumn(width="small"),
-                    "下回った日数": st.column_config.TextColumn(width="small"),
-                    "期間中最安値（円）": st.column_config.TextColumn(width="small"),
-                    next_high_column: st.column_config.TextColumn(width="medium"),
-                },
-            )
+            with st.container(key="desktop_results_table"):
+                styled_streaks = display_streaks.style.apply(
+                    lambda _: cell_styles, axis=None
+                )
+                st.dataframe(
+                    styled_streaks,
+                    hide_index=True,
+                    width=850,
+                    height=table_height,
+                    column_config={
+                        "開始日": st.column_config.TextColumn(width="small"),
+                        "終了日": st.column_config.TextColumn(width="small"),
+                        "下回った日数": st.column_config.TextColumn(width="small"),
+                        "期間中最安値（円）": st.column_config.TextColumn(width="small"),
+                        next_high_column: st.column_config.TextColumn(width="medium"),
+                    },
+                    key="desktop_streaks",
+                )
+
+            with st.container(key="mobile_results_table"):
+                mobile_display = display_streaks.drop(columns=["終了日"])
+                mobile_styles = cell_styles.drop(columns=["終了日"])
+                styled_mobile = mobile_display.style.apply(
+                    lambda _: mobile_styles, axis=None
+                )
+                st.dataframe(
+                    styled_mobile,
+                    hide_index=True,
+                    width=680,
+                    height=table_height,
+                    column_config={
+                        "開始日": st.column_config.TextColumn(width="small"),
+                        "下回った日数": st.column_config.TextColumn(width="small"),
+                        "期間中最安値（円）": st.column_config.TextColumn(width="small"),
+                        next_high_column: st.column_config.TextColumn(width="medium"),
+                    },
+                    key="mobile_streaks",
+                )
             csv = display_streaks.to_csv(index=False).encode("utf-8-sig")
             st.download_button("結果をCSVで保存", csv, "nissan_price_streaks.csv", "text/csv")
 
@@ -256,3 +284,4 @@ if run:
     except Exception as exc:
         st.error(f"処理できませんでした: {exc}")
         st.caption("証券コードとインターネット接続をご確認のうえ、もう一度お試しください。")
+
