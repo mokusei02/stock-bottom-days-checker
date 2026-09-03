@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
@@ -87,12 +88,31 @@ def get_company_name(ticker: str) -> str:
         return ticker.removesuffix(".T")
 
 
+@st.cache_data
+def load_company_options() -> list[str]:
+    companies = pd.read_csv(
+        Path(__file__).with_name("companies.csv"), dtype={"code": str}
+    )
+    return [f"{row.code}｜{row.name}" for row in companies.itertuples(index=False)]
+
+
 def render_search_controls(
     key_prefix: str, show_end_date: bool = True, start_date_label: str = "開始日"
 ):
-    security_code = st.text_input(
-        "証券コード", value="7201", max_chars=12, key=f"{key_prefix}_code"
-    ).strip().upper()
+    company_options = load_company_options()
+    default_index = next(
+        (index for index, option in enumerate(company_options) if option.startswith("7201｜")),
+        0,
+    )
+    selected_company = st.selectbox(
+        "企業名・証券コード",
+        options=company_options,
+        index=default_index,
+        key=f"{key_prefix}_company",
+        accept_new_options=True,
+        help="企業名または証券コードを入力して、候補から選択してください。",
+    )
+    security_code = selected_company.split("｜", 1)[0].strip().upper()
     threshold = st.number_input(
         "XX円（この価格以下）",
         min_value=0,
