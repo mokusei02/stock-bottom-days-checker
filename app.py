@@ -241,7 +241,7 @@ if run:
                     width=680,
                     height=table_height,
                     column_config={
-                        "開始日": st.column_config.TextColumn(width="small"),
+                        "開始日": st.column_config.TextColumn(width=145),
                         "下回った日数": st.column_config.TextColumn(width="small"),
                         "期間中最安値（円）": st.column_config.TextColumn(width="small"),
                         next_high_column: st.column_config.TextColumn(width="medium"),
