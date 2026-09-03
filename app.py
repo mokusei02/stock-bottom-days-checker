@@ -100,7 +100,7 @@ def render_search_controls(
     key_prefix: str,
     show_end_date: bool = True,
     start_date_label: str = "開始日",
-    start_date_value: date = date(2000, 1, 4),
+    start_date_value: date = date(2010, 1, 1),
 ):
     company_options = load_company_options()
     default_index = next(
