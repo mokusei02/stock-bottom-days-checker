@@ -94,12 +94,58 @@ def get_current_price(ticker: str) -> float:
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_company_name(ticker: str) -> str:
+def get_company_info(ticker: str) -> dict:
     try:
-        info = yf.Ticker(ticker).get_info()
-        return info.get("longName") or info.get("shortName") or ticker.removesuffix(".T")
+        return yf.Ticker(ticker).get_info() or {}
     except Exception:
-        return ticker.removesuffix(".T")
+        return {}
+
+
+def get_company_name(ticker: str, info: dict) -> str:
+    security_code = ticker.removesuffix(".T")
+    for option in load_company_options():
+        code, name = option.split("｜", 1)
+        if code == security_code:
+            return name
+    return info.get("longName") or info.get("shortName") or ticker.removesuffix(".T")
+
+
+def format_market_cap(value) -> str:
+    if not isinstance(value, (int, float)) or value <= 0:
+        return "情報なし"
+    if value >= 1_000_000_000_000:
+        return f"{value / 1_000_000_000_000:,.2f}兆円"
+    return f"{value / 100_000_000:,.0f}億円"
+
+
+def classify_company_size(market_cap) -> str:
+    if not isinstance(market_cap, (int, float)) or market_cap <= 0:
+        return "判定できません"
+    if market_cap >= 1_000_000_000_000:
+        return "大型（時価総額1兆円以上）"
+    if market_cap >= 100_000_000_000:
+        return "中型（時価総額1,000億円以上）"
+    return "小型（時価総額1,000億円未満）"
+
+
+def render_company_info(company_name: str, ticker: str, info: dict) -> None:
+    st.subheader("企業情報・会社規模")
+    market_cap = info.get("marketCap")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("企業名", company_name)
+    col2.metric("時価総額", format_market_cap(market_cap))
+    col3.metric("会社規模", classify_company_size(market_cap))
+
+    details = [f"**証券コード:** {ticker.removesuffix('.T')}"]
+    if info.get("fullTimeEmployees"):
+        details.append(f"**従業員数:** {info['fullTimeEmployees']:,}人")
+    st.markdown("　｜　".join(details))
+
+    website = info.get("website")
+    if website:
+        st.link_button("公式サイト", website)
+    if not info:
+        st.caption(f"{ticker} の企業情報を取得できませんでした。")
 
 
 @st.cache_data
@@ -115,6 +161,7 @@ def render_search_controls(
     show_end_date: bool = True,
     start_date_label: str = "開始日",
     start_date_value: date = date(2010, 1, 1),
+    current_price_after_dates: bool = False,
 ):
     company_options = load_company_options()
     default_index = next(
@@ -137,9 +184,10 @@ def render_search_controls(
         step=1,
         key=f"{key_prefix}_threshold",
     )
-    use_current_price = st.checkbox(
-        "現在の株価", value=False, key=f"{key_prefix}_use_current_price"
-    )
+    if not current_price_after_dates:
+        use_current_price = st.checkbox(
+            "現在の株価", value=False, key=f"{key_prefix}_use_current_price"
+        )
     end_date = (
         st.date_input("終了日", value=date.today(), key=f"{key_prefix}_end")
         if show_end_date
@@ -148,6 +196,10 @@ def render_search_controls(
     start_date = st.date_input(
         start_date_label, value=start_date_value, key=f"{key_prefix}_start"
     )
+    if current_price_after_dates:
+        use_current_price = st.checkbox(
+            "現在の株価", value=False, key=f"{key_prefix}_use_current_price"
+        )
     run = st.button(
         "集計する", type="primary", use_container_width=True, key=f"{key_prefix}_run"
     )
@@ -160,8 +212,25 @@ st.markdown(
     <style>
     .st-key-mobile_filters { display: none; }
     .st-key-mobile_results_table { display: none; }
+    .stAppViewBlockContainer { padding-bottom: 5rem; }
+    .app-footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        z-index: 999;
+        padding: 0.65rem 1rem;
+        text-align: center;
+        background: color-mix(in srgb, var(--background-color) 94%, transparent);
+        border-top: 1px solid rgba(128, 128, 128, 0.25);
+        backdrop-filter: blur(8px);
+    }
     @media (max-width: 768px) {
         .st-key-mobile_filters { display: block; }
+        .st-key-mobile_use_current_price {
+            width: fit-content;
+            margin-left: auto;
+        }
         .st-key-desktop_results_table { display: none; }
         .st-key-mobile_results_table { display: block; }
         section[data-testid="stSidebar"] { display: none; }
@@ -171,6 +240,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+st.title("底値日数チェッカー")
+
 with st.container(key="mobile_filters"):
     st.header("検索条件")
     mobile_values = render_search_controls(
@@ -178,11 +249,15 @@ with st.container(key="mobile_filters"):
         show_end_date=False,
         start_date_label="検索開始日",
         start_date_value=date(2010, 1, 1),
+        current_price_after_dates=True,
     )
 
-st.title("底値日数チェッカー")
 st.caption("入力した国内証券コードの株価が、指定価格以下だった連続期間を探します。")
-st.markdown("制作者：木星在住　[Twitter](https://x.com/mokuseidayo)")
+st.markdown(
+    '<div class="app-footer">制作者：木星在住　'
+    '<a href="https://x.com/mokuseidayo" target="_blank">Twitter</a></div>',
+    unsafe_allow_html=True,
+)
 
 with st.sidebar:
     st.header("検索条件")
@@ -208,7 +283,8 @@ if run:
             if use_current_price:
                 threshold = get_current_price(ticker)
             prices = download_prices(ticker, start_date, end_date)
-            company_name = get_company_name(ticker)
+            company_info = get_company_info(ticker)
+            company_name = get_company_name(ticker, company_info)
         if column not in prices.columns:
             raise ValueError(f"{label}列がデータにありません。")
 
@@ -340,6 +416,7 @@ if run:
             (normal_line + below_line + below_points + threshold_line).properties(height=420),
             use_container_width=True,
         )
+        render_company_info(company_name, ticker, company_info)
     except Exception as exc:
         st.error(f"処理できませんでした: {exc}")
         st.caption("証券コードとインターネット接続をご確認のうえ、もう一度お試しください。")
