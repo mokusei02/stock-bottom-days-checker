@@ -87,21 +87,59 @@ def get_company_name(ticker: str) -> str:
         return ticker.removesuffix(".T")
 
 
+def render_search_controls(key_prefix: str):
+    security_code = st.text_input(
+        "証券コード", value="7201", max_chars=12, key=f"{key_prefix}_code"
+    ).strip().upper()
+    threshold = st.number_input(
+        "XX円（この価格以下）",
+        min_value=0.0,
+        value=320.0,
+        step=1.0,
+        key=f"{key_prefix}_threshold",
+    )
+    end_date = st.date_input("終了日", value=date.today(), key=f"{key_prefix}_end")
+    start_date = st.date_input(
+        "開始日", value=date(2000, 1, 4), key=f"{key_prefix}_start"
+    )
+    run = st.button(
+        "集計する", type="primary", use_container_width=True, key=f"{key_prefix}_run"
+    )
+    return security_code, threshold, start_date, end_date, run
+
+
 st.set_page_config(page_title="底値日数チェッカー", page_icon="📉", layout="wide")
+st.markdown(
+    """
+    <style>
+    .st-key-mobile_filters { display: none; }
+    @media (max-width: 768px) {
+        .st-key-mobile_filters { display: block; }
+        section[data-testid="stSidebar"] { display: none; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.container(key="mobile_filters"):
+    st.header("検索条件")
+    mobile_values = render_search_controls("mobile")
+
 st.title("底値日数チェッカー")
 st.caption("入力した国内証券コードの株価が、指定価格以下だった連続期間を探します。")
 st.markdown("制作者：木星在住　[Twitter](https://x.com/mokuseidayo)")
 
 with st.sidebar:
     st.header("検索条件")
-    security_code = st.text_input("証券コード", value="7201", max_chars=12).strip().upper()
-    threshold = st.number_input("XX円（この価格以下）", min_value=0.0, value=320.0, step=1.0)
-    label = "安値"
-    column = "Low"
-    end_date = st.date_input("終了日", value=date.today())
-    default_start = date(2000, 1, 4)
-    start_date = st.date_input("開始日", value=default_start)
-    run = st.button("集計する", type="primary", use_container_width=True)
+    desktop_values = render_search_controls("desktop")
+
+if mobile_values[-1]:
+    security_code, threshold, start_date, end_date, run = mobile_values
+else:
+    security_code, threshold, start_date, end_date, run = desktop_values
+label = "安値"
+column = "Low"
 
 if run:
     if not security_code:
