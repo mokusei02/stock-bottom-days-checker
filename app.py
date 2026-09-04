@@ -665,6 +665,28 @@ st.markdown(
             transform-origin: center;
             margin-right: 0.5rem;
         }
+        .st-key-mobile_light_pickling_price {
+            width: fit-content;
+            margin: -0.35rem 0 0 auto;
+        }
+        .st-key-mobile_light_pickling_price [data-testid="stWidgetLabel"] p {
+            font-size: 1.5rem !important;
+            font-weight: 700 !important;
+            line-height: 1.2;
+        }
+        .st-key-mobile_light_pickling_price [data-testid="stCheckbox"] label > div:first-of-type {
+            transform: scale(1.5);
+            transform-origin: center;
+            margin-right: 0.5rem;
+        }
+        .st-key-mobile_filters .light-pickling-note {
+            width: fit-content;
+            margin: -0.35rem 0 0.75rem auto;
+            text-align: right;
+        }
+        .st-key-mobile_run {
+            margin-top: 0.25rem;
+        }
         .st-key-desktop_results_table { display: none; }
         .st-key-mobile_results_table { display: block; }
         section[data-testid="stSidebar"] { display: none; }
