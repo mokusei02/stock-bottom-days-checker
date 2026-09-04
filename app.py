@@ -681,11 +681,12 @@ st.markdown(
         }
         .st-key-mobile_filters .light-pickling-note {
             width: fit-content;
-            margin: -0.35rem 0 0.75rem auto;
+            margin: 0.4rem 0 0 auto;
+            padding-bottom: 1.15rem;
             text-align: right;
         }
         .st-key-mobile_run {
-            margin-top: 0.25rem;
+            margin-top: 0.65rem;
         }
         .st-key-mobile_results_table .results-table-scroll {
             overflow-x: hidden;
@@ -869,6 +870,10 @@ if run:
             even_year_rows = start_years.mod(2).eq(0)
             cell_styles.loc[even_year_rows, :] = "background-color: #EEF6FF;"
             cell_styles.loc[~even_year_rows, :] = "background-color: #FFF7E6;"
+            longest_rows = streaks["下回った日数"].eq(
+                streaks["下回った日数"].max()
+            )
+            cell_styles.loc[longest_rows, :] += " font-weight: 700;"
             cell_styles.loc[
                 streaks["下回った日数"].gt(30), "下回った日数"
             ] += " color: #DC2626; font-weight: 700;"
