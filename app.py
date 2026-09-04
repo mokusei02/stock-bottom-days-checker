@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
@@ -15,6 +16,7 @@ import yfinance as yf
 LABELS = {"Close": "終値", "Low": "安値", "Open": "始値", "High": "高値"}
 START_YEAR_OPTIONS = list(range(2000, 2030, 5))
 SEARCH_HISTORY_FILE = Path(__file__).with_name(".search_history.json")
+SEARCH_HISTORY_COOKIE = "stock_search_history"
 TABLE_HEADER_STYLES = [
     {
         "selector": "th",
@@ -251,17 +253,40 @@ def add_desktop_search_history(search_values) -> None:
         json.dumps(updated_history, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
+    cookie_value = base64.urlsafe_b64encode(
+        json.dumps(updated_history, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).decode("ascii")
+    components.html(
+        f"""
+        <script>
+        const secure = window.parent.location.protocol === "https:" ? "; Secure" : "";
+        window.parent.document.cookie =
+            {json.dumps(SEARCH_HISTORY_COOKIE + "=" + cookie_value)} +
+            "; Max-Age=31536000; Path=/; SameSite=Lax" + secure;
+        </script>
+        """,
+        height=0,
+    )
 
 
 def get_desktop_search_history() -> list[dict]:
     if "desktop_search_history" in st.session_state:
         return st.session_state.desktop_search_history
     try:
-        saved_history = (
-            json.loads(SEARCH_HISTORY_FILE.read_text(encoding="utf-8"))
-            if SEARCH_HISTORY_FILE.exists()
-            else []
-        )
+        cookie_value = st.context.cookies.get(SEARCH_HISTORY_COOKIE, "")
+        if cookie_value:
+            padding = "=" * (-len(cookie_value) % 4)
+            saved_history = json.loads(
+                base64.urlsafe_b64decode(cookie_value + padding).decode("utf-8")
+            )
+        else:
+            saved_history = (
+                json.loads(SEARCH_HISTORY_FILE.read_text(encoding="utf-8"))
+                if SEARCH_HISTORY_FILE.exists()
+                else []
+            )
         required_keys = {"company", "threshold", "use_current_price", "start_year"}
         history = (
             [
@@ -272,24 +297,26 @@ def get_desktop_search_history() -> list[dict]:
             if isinstance(saved_history, list)
             else []
         )
-    except (OSError, json.JSONDecodeError, TypeError):
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
         history = []
     st.session_state.desktop_search_history = history[:5]
     return st.session_state.desktop_search_history
 
 
-def restore_desktop_search(entry: dict) -> None:
-    st.session_state.desktop_company = entry["company"]
-    st.session_state.desktop_threshold = int(entry["threshold"])
-    st.session_state.desktop_use_current_price = bool(entry["use_current_price"])
-    st.session_state.desktop_light_pickling_price = bool(
+def restore_search(entry: dict, key_prefix: str) -> None:
+    st.session_state[f"{key_prefix}_company"] = entry["company"]
+    st.session_state[f"{key_prefix}_threshold"] = int(entry["threshold"])
+    st.session_state[f"{key_prefix}_use_current_price"] = bool(
+        entry["use_current_price"]
+    )
+    st.session_state[f"{key_prefix}_light_pickling_price"] = bool(
         entry.get("light_pickling_price", False)
     )
-    st.session_state.desktop_start_year_v2 = int(entry["start_year"])
-    st.session_state.desktop_history_run = True
+    st.session_state[f"{key_prefix}_start_year_v2"] = int(entry["start_year"])
+    st.session_state[f"{key_prefix}_history_run"] = True
 
 
-def render_desktop_search_history() -> None:
+def render_search_history(key_prefix: str) -> None:
     st.markdown("### 検索履歴")
     history = get_desktop_search_history()
     if not history:
@@ -298,7 +325,7 @@ def render_desktop_search_history() -> None:
     for index, entry in enumerate(history):
         company_name = entry["company"].split("｜", 1)[-1]
         price_label = (
-            "現在の株価"
+            "浅漬け株価"
             if entry.get("light_pickling_price", False)
             else "現在の株価"
             if entry["use_current_price"]
@@ -306,9 +333,9 @@ def render_desktop_search_history() -> None:
         )
         st.button(
             f"{company_name}\n{price_label}｜{entry['start_year']}年1月～",
-            key=f"desktop_history_{index}",
-            on_click=restore_desktop_search,
-            args=(entry,),
+            key=f"{key_prefix}_history_{index}",
+            on_click=restore_search,
+            args=(entry, key_prefix),
             use_container_width=True,
         )
 
@@ -440,9 +467,28 @@ if "history" in st.query_params:
 components.html(
     """
     <script>
-    for (const page of [window.parent.document, window.top.document]) {
+    function markAsJapanese(page) {
         page.documentElement.lang = "ja";
-        page.body?.setAttribute("lang", "ja");
+        page.documentElement.setAttribute("translate", "no");
+        page.documentElement.classList.add("notranslate");
+        if (page.body) {
+            page.body.lang = "ja";
+            page.body.setAttribute("translate", "no");
+            page.body.classList.add("notranslate");
+        }
+        if (!page.head.querySelector('meta[name="google"]')) {
+            const meta = page.createElement("meta");
+            meta.name = "google";
+            meta.content = "notranslate";
+            page.head.appendChild(meta);
+        }
+    }
+    for (const target of [window.parent, window.top]) {
+        try {
+            markAsJapanese(target.document);
+        } catch (_) {
+            // A cross-origin outer frame cannot be changed from the app.
+        }
     }
     </script>
     """,
@@ -453,6 +499,7 @@ st.markdown(
     <style>
     .st-key-mobile_filters { display: none; }
     .st-key-mobile_results_table { display: none; }
+    .st-key-mobile_search_history { display: none; }
     .st-key-nukazuke_summary {
         max-width: 680px;
     }
@@ -721,6 +768,10 @@ st.markdown(
         }
         .st-key-desktop_results_table { display: none; }
         .st-key-mobile_results_table { display: block; }
+        .st-key-mobile_search_history {
+            display: block;
+            margin-top: 1.25rem;
+        }
         section[data-testid="stSidebar"] { display: none; }
     }
     </style>
@@ -741,6 +792,10 @@ with st.container(key="mobile_filters"):
         start_date_label="検索開始日",
         current_price_after_dates=True,
     )
+    if st.session_state.pop("mobile_history_run", False):
+        mobile_values = (*mobile_values[:-1], True)
+    if mobile_values[-1]:
+        add_desktop_search_history(mobile_values)
 
 st.markdown(
     '<div class="app-subtitle">'
@@ -748,6 +803,8 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True,
 )
+with st.container(key="mobile_search_history"):
+    render_search_history("mobile")
 st.markdown(
     '<div class="app-footer">制作者：木星在住　'
     '<a href="https://x.com/mokuseidayo" target="_blank">Twitter</a></div>',
@@ -761,7 +818,7 @@ with st.sidebar:
         desktop_values = (*desktop_values[:-1], True)
     if desktop_values[-1]:
         add_desktop_search_history(desktop_values)
-    render_desktop_search_history()
+    render_search_history("desktop")
 
 if mobile_values[-1]:
     security_code, threshold, use_current_price, light_pickling_price, start_date, end_date, run = mobile_values
