@@ -85,7 +85,15 @@ def find_streaks(df: pd.DataFrame, column: str, threshold: float) -> pd.DataFram
             }
         )
     if not rows:
-        return pd.DataFrame(columns=["開始日", "終了日", "下回った日数", "期間中最安値（円）", next_high_column])
+        return pd.DataFrame(
+            columns=[
+                "開始日",
+                "終了日",
+                "下回った日数",
+                "期間中最安値（円）",
+                next_high_column,
+            ]
+        )
 
     high_prices = df["High"].dropna() if "High" in df.columns else prices
     for index, row in enumerate(rows):
@@ -934,10 +942,27 @@ if run:
             cell_styles = pd.DataFrame(
                 "", index=display_streaks.index, columns=display_streaks.columns
             )
-            start_years = pd.to_datetime(streaks["開始日"]).dt.year
-            even_year_rows = start_years.mod(2).eq(0)
-            cell_styles.loc[even_year_rows, :] = "background-color: #EEF6FF;"
-            cell_styles.loc[~even_year_rows, :] = "background-color: #FFF7E6;"
+            start_months = pd.to_datetime(streaks["開始日"]).dt.month
+            even_month_rows = start_months.mod(2).eq(0)
+            yellow_columns = ["開始日", "終了日", "下回った日数"]
+            cell_styles.loc[even_month_rows, yellow_columns] = (
+                "background-color: #FFFAE8;"
+            )
+            cell_styles.loc[~even_month_rows, yellow_columns] = (
+                "background-color: #FFFDF5;"
+            )
+            cell_styles.loc[even_month_rows, "期間中最安値（円）"] = (
+                "background-color: #FEF1F1;"
+            )
+            cell_styles.loc[~even_month_rows, "期間中最安値（円）"] = (
+                "background-color: #FFF9F9;"
+            )
+            cell_styles.loc[even_month_rows, next_high_column] = (
+                "background-color: #F2F7FF;"
+            )
+            cell_styles.loc[~even_month_rows, next_high_column] = (
+                "background-color: #FAFCFF;"
+            )
             longest_rows = streaks["下回った日数"].eq(
                 streaks["下回った日数"].max()
             )
