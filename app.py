@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -12,6 +13,14 @@ import yfinance as yf
 
 
 LABELS = {"Close": "終値", "Low": "安値", "Open": "始値", "High": "高値"}
+START_YEAR_OPTIONS = list(range(2000, 2030, 5))
+SEARCH_HISTORY_FILE = Path(__file__).with_name(".search_history.json")
+TABLE_HEADER_STYLES = [
+    {
+        "selector": "th",
+        "props": [("color", "#111111"), ("font-weight", "700")],
+    }
+]
 
 
 def format_date_ja(value) -> str:
@@ -74,6 +83,39 @@ def find_streaks(df: pd.DataFrame, column: str, threshold: float) -> pd.DataFram
     ).reset_index(drop=True)
     result = result.drop(columns=["_開始日時", "_終了日時"])
     return result
+
+
+def find_light_pickling_price(
+    df: pd.DataFrame, column: str, target_days: int = 30
+) -> tuple[int, int]:
+    """Find the highest whole-yen threshold whose longest streak is within target_days."""
+    prices = df[column].dropna()
+    if prices.empty:
+        raise RuntimeError("浅漬け株価を計算できませんでした。")
+
+    def longest_days(threshold: int) -> int:
+        below = prices <= threshold
+        if not below.any():
+            return 0
+        groups = below.ne(below.shift()).cumsum()
+        return max(
+            (segment.index[-1] - segment.index[0]).days + 1
+            for _, segment in prices[below].groupby(groups[below])
+        )
+
+    low = int(prices.min())
+    high = int(prices.max())
+    best_price = low
+    best_days = longest_days(low)
+    while low <= high:
+        candidate = (low + high) // 2
+        duration = longest_days(candidate)
+        if duration <= target_days:
+            best_price, best_days = candidate, duration
+            low = candidate + 1
+        else:
+            high = candidate - 1
+    return best_price, best_days
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -185,11 +227,120 @@ def load_company_options() -> list[str]:
     return [f"{row.code}｜{row.name}" for row in companies.itertuples(index=False)]
 
 
+def add_desktop_search_history(search_values) -> None:
+    security_code, threshold, use_current_price, light_pickling_price, start_date, _, _ = search_values
+    company_label = next(
+        (
+            option
+            for option in load_company_options()
+            if option.startswith(f"{security_code}｜")
+        ),
+        security_code,
+    )
+    entry = {
+        "company": company_label,
+        "threshold": int(threshold),
+        "use_current_price": use_current_price,
+        "light_pickling_price": light_pickling_price,
+        "start_year": start_date.year,
+    }
+    history = get_desktop_search_history()
+    updated_history = [entry, *(item for item in history if item != entry)][:5]
+    st.session_state.desktop_search_history = updated_history
+    SEARCH_HISTORY_FILE.write_text(
+        json.dumps(updated_history, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def get_desktop_search_history() -> list[dict]:
+    if "desktop_search_history" in st.session_state:
+        return st.session_state.desktop_search_history
+    try:
+        saved_history = (
+            json.loads(SEARCH_HISTORY_FILE.read_text(encoding="utf-8"))
+            if SEARCH_HISTORY_FILE.exists()
+            else []
+        )
+        required_keys = {"company", "threshold", "use_current_price", "start_year"}
+        history = (
+            [
+                entry
+                for entry in saved_history
+                if isinstance(entry, dict) and required_keys.issubset(entry)
+            ]
+            if isinstance(saved_history, list)
+            else []
+        )
+    except (OSError, json.JSONDecodeError, TypeError):
+        history = []
+    st.session_state.desktop_search_history = history[:5]
+    return st.session_state.desktop_search_history
+
+
+def restore_desktop_search(entry: dict) -> None:
+    st.session_state.desktop_company = entry["company"]
+    st.session_state.desktop_threshold = int(entry["threshold"])
+    st.session_state.desktop_use_current_price = bool(entry["use_current_price"])
+    st.session_state.desktop_light_pickling_price = bool(
+        entry.get("light_pickling_price", False)
+    )
+    st.session_state.desktop_start_year_v2 = int(entry["start_year"])
+    st.session_state.desktop_history_run = True
+
+
+def render_desktop_search_history() -> None:
+    st.markdown("### 検索履歴")
+    history = get_desktop_search_history()
+    if not history:
+        st.caption("検索履歴はありません。")
+        return
+    for index, entry in enumerate(history):
+        company_name = entry["company"].split("｜", 1)[-1]
+        price_label = (
+            "現在の株価"
+            if entry.get("light_pickling_price", False)
+            else "現在の株価"
+            if entry["use_current_price"]
+            else f"{entry['threshold']:,.0f}円以下"
+        )
+        st.button(
+            f"{company_name}\n{price_label}｜{entry['start_year']}年1月～",
+            key=f"desktop_history_{index}",
+            on_click=restore_desktop_search,
+            args=(entry,),
+            use_container_width=True,
+        )
+
+
+def render_results_table(
+    styled_table, height: int, limit_vertical_height: bool = True
+) -> None:
+    table_html = styled_table.hide(axis="index").to_html()
+    height_style = f"max-height:{min(height, 620)}px" if limit_vertical_height else ""
+    st.markdown(
+        f'<div class="results-table-scroll" '
+        f'style="{height_style}">{table_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def select_price_mode(key_prefix: str, selected_mode: str) -> None:
+    selected_key = f"{key_prefix}_{selected_mode}"
+    if not st.session_state.get(selected_key, False):
+        return
+    current_key = f"{key_prefix}_use_current_price"
+    light_key = f"{key_prefix}_light_pickling_price"
+    if selected_mode == "use_current_price":
+        st.session_state[light_key] = False
+    elif st.session_state.get(current_key, False):
+        st.session_state[light_key] = False
+
+
 def render_search_controls(
     key_prefix: str,
     show_end_date: bool = True,
     start_date_label: str = "開始日",
-    start_date_value: date = date(2010, 1, 1),
     current_price_after_dates: bool = False,
 ):
     company_options = load_company_options()
@@ -198,12 +349,13 @@ def render_search_controls(
         0,
     )
     selected_company = st.selectbox(
-        "企業名・証券コード",
+        "企業名",
         options=company_options,
         index=default_index,
         key=f"{key_prefix}_company",
-        accept_new_options=True,
-        help="企業名または証券コードを入力して、候補から選択してください。",
+        format_func=lambda option: option.split("｜", 1)[-1],
+        accept_new_options=False,
+        help="企業名を入力して、候補から選択してください。",
     )
     security_code = selected_company.split("｜", 1)[0].strip().upper()
     threshold = st.number_input(
@@ -215,32 +367,76 @@ def render_search_controls(
     )
     if not current_price_after_dates:
         use_current_price = st.checkbox(
-            "現在の株価", value=False, key=f"{key_prefix}_use_current_price"
+            "現在の株価",
+            value=False,
+            key=f"{key_prefix}_use_current_price",
+            on_change=select_price_mode,
+            args=(key_prefix, "use_current_price"),
         )
+        light_pickling_price = st.checkbox(
+            "浅漬け株価",
+            value=False,
+            key=f"{key_prefix}_light_pickling_price",
+            on_change=select_price_mode,
+            args=(key_prefix, "light_pickling_price"),
+        )
+        st.markdown(
+            '<div class="light-pickling-note">※塩漬けを避ける株価が分かります</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown('<div class="start-date-spacer"></div>', unsafe_allow_html=True)
     end_date = (
         st.date_input("終了日", value=date.today(), key=f"{key_prefix}_end")
         if show_end_date
         else date.today()
     )
-    latest_start_date = (pd.Timestamp(end_date) - pd.DateOffset(months=1)).date()
-    start_date = st.date_input(
+    start_year = st.selectbox(
         start_date_label,
-        value=start_date_value,
-        max_value=latest_start_date,
-        key=f"{key_prefix}_start",
-        help="検索期間が1か月以上になる日付を指定してください。",
+        options=START_YEAR_OPTIONS,
+        index=START_YEAR_OPTIONS.index(2015),
+        format_func=lambda year: f"{year}年1月～",
+        key=f"{key_prefix}_start_year_v2",
     )
+    start_date = date(start_year, 1, 1)
     if current_price_after_dates:
         use_current_price = st.checkbox(
-            "現在の株価", value=False, key=f"{key_prefix}_use_current_price"
+            "現在の株価",
+            value=False,
+            key=f"{key_prefix}_use_current_price",
+            on_change=select_price_mode,
+            args=(key_prefix, "use_current_price"),
+        )
+        light_pickling_price = st.checkbox(
+            "浅漬け株価",
+            value=False,
+            key=f"{key_prefix}_light_pickling_price",
+            on_change=select_price_mode,
+            args=(key_prefix, "light_pickling_price"),
+        )
+        st.markdown(
+            '<div class="light-pickling-note">※塩漬けを避ける株価が分かります</div>',
+            unsafe_allow_html=True,
         )
     run = st.button(
         "集計する", type="primary", use_container_width=True, key=f"{key_prefix}_run"
     )
-    return security_code, threshold, use_current_price, start_date, end_date, run
+    return (
+        security_code,
+        threshold,
+        use_current_price,
+        light_pickling_price,
+        start_date,
+        end_date,
+        run,
+    )
 
 
 st.set_page_config(page_title="塩漬け日数チェッカー", page_icon="📉", layout="wide")
+
+# Older versions stored search history in the URL. Remove that legacy parameter
+# now that history is persisted locally, so the address always stays clean.
+if "history" in st.query_params:
+    del st.query_params["history"]
 components.html(
     """
     <script>
@@ -283,6 +479,66 @@ st.markdown(
     .st-key-nukazuke_summary [data-testid="stMetricValue"] {
         justify-content: center;
         text-align: center;
+    }
+    .st-key-desktop_results_table [role="columnheader"],
+    .st-key-mobile_results_table [role="columnheader"] {
+        color: #111111 !important;
+        font-weight: 700 !important;
+    }
+    .results-table-scroll {
+        width: 100%;
+        overflow: auto;
+        border: 1px solid #AEB5BF;
+        border-radius: 0.55rem;
+    }
+    .results-table-scroll table {
+        width: 100%;
+        min-width: 720px;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+    }
+    .results-table-scroll th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        padding: 0.65rem 0.55rem;
+        color: #111111 !important;
+        background: #DDE1E7 !important;
+        border: 1px solid #AEB5BF;
+        font-weight: 700 !important;
+        text-align: left;
+        white-space: nowrap;
+    }
+    .results-table-scroll td {
+        padding: 0.55rem;
+        border: 1px solid #AEB5BF;
+        white-space: nowrap;
+    }
+    .light-pickling-headings {
+        margin-bottom: 2rem;
+    }
+    .light-pickling-note {
+        margin-top: -0.8rem;
+        color: #6B7280;
+        font-size: 0.72rem;
+        line-height: 1.15;
+    }
+    .start-date-spacer {
+        height: 1rem;
+    }
+    .light-pickling-headings h3 {
+        margin: 0 !important;
+        line-height: 1.05;
+    }
+    .light-pickling-headings h3 + h3 {
+        margin-top: 0 !important;
+    }
+    .light-pickling-result-note {
+        margin: 0.35rem 0 0 !important;
+        color: #8A919C;
+        font-size: 0.78rem;
+        font-weight: 400;
+        line-height: 1.25;
     }
     .app-title {
         display: flex;
@@ -429,7 +685,6 @@ with st.container(key="mobile_filters"):
         "mobile",
         show_end_date=False,
         start_date_label="検索開始日",
-        start_date_value=date(2010, 1, 1),
         current_price_after_dates=True,
     )
 
@@ -447,12 +702,19 @@ st.markdown(
 
 with st.sidebar:
     st.header("検索条件")
-    desktop_values = render_search_controls("desktop")
+    desktop_values = render_search_controls("desktop", show_end_date=False)
+    if st.session_state.pop("desktop_history_run", False):
+        desktop_values = (*desktop_values[:-1], True)
+    if desktop_values[-1]:
+        add_desktop_search_history(desktop_values)
+    render_desktop_search_history()
 
 if mobile_values[-1]:
-    security_code, threshold, use_current_price, start_date, end_date, run = mobile_values
+    security_code, threshold, use_current_price, light_pickling_price, start_date, end_date, run = mobile_values
 else:
-    security_code, threshold, use_current_price, start_date, end_date, run = desktop_values
+    security_code, threshold, use_current_price, light_pickling_price, start_date, end_date, run = desktop_values
+if use_current_price:
+    light_pickling_price = False
 label = "安値"
 column = "Low"
 
@@ -466,21 +728,61 @@ if run:
     try:
         with st.spinner("株価データを準備しています…"):
             ticker = security_code if "." in security_code else f"{security_code}.T"
-            if use_current_price:
-                threshold = get_current_price(ticker)
             prices = download_prices(ticker, start_date, end_date)
+            light_pickling_days = None
+            current_market_price = None
+            if light_pickling_price:
+                threshold, light_pickling_days = find_light_pickling_price(
+                    prices, column, target_days=30
+                )
+                current_market_price = get_current_price(ticker)
+            elif use_current_price:
+                threshold = get_current_price(ticker)
             company_info = get_company_info(ticker)
             company_name = get_company_name(ticker, company_info)
         if column not in prices.columns:
             raise ValueError(f"{label}列がデータにありません。")
 
         streaks = find_streaks(prices, column, threshold)
-        if use_current_price:
+        if light_pickling_price:
+            st.info(
+                f"浅漬け株価：{threshold:,.0f}円（最長{light_pickling_days}日）を基準にしています。"
+            )
+        elif use_current_price:
             st.info(f"現在の株価（直近取引日の終値）：{threshold:,.0f}円を基準にしています。")
-        st.subheader(
-            f"{format_month_ja(start_date)}から{format_month_ja(end_date)}まで"
-            f"{company_name}が{threshold:,.0f}円以下の塩漬け期間"
-        )
+        if light_pickling_price:
+            price_difference = current_market_price - threshold
+            difference_percent = (
+                abs(price_difference) / threshold * 100 if threshold else 0
+            )
+            if price_difference > 0:
+                difference_html = (
+                    f'浅漬け株価より<span style="color:#DC2626;">'
+                    f"{difference_percent:.1f}％高い</span>です。"
+                )
+            elif price_difference < 0:
+                difference_html = (
+                    f'浅漬け株価より<span style="color:#2563EB;">'
+                    f"{difference_percent:.1f}％安い</span>です。"
+                )
+            else:
+                difference_html = "浅漬け株価と同じです。"
+            st.markdown(
+                '<div class="light-pickling-headings">'
+                f"<h3>{format_month_ja(start_date)}から{format_month_ja(end_date)}まで"
+                f"【{company_name}】の浅漬け価格は{threshold:,.0f}円です。</h3>"
+                f"<h3>現在の株価は{current_market_price:,.0f}円です。"
+                f"{difference_html}</h3>"
+                '<p class="light-pickling-result-note">'
+                "※浅漬け株価は長期塩漬けを避けるための買い時目安となります"
+                "</p></div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.subheader(
+                f"{format_month_ja(start_date)}から{format_month_ja(end_date)}まで"
+                f"{company_name}が{threshold:,.0f}円以下の塩漬け期間"
+            )
         if streaks.empty:
             st.warning("該当する取引日はありませんでした。")
         else:
@@ -488,6 +790,11 @@ if run:
             display_streaks = streaks.copy()
             display_streaks["開始日"] = display_streaks["開始日"].map(format_date_ja)
             display_streaks["終了日"] = display_streaks["終了日"].map(format_date_ja)
+            latest_prices = prices[column].dropna()
+            if not latest_prices.empty and latest_prices.iloc[-1] <= threshold:
+                latest_date = latest_prices.index[-1].date()
+                ongoing_rows = streaks["終了日"].eq(latest_date)
+                display_streaks.loc[ongoing_rows, "終了日"] = "—"
             display_streaks["下回った日数"] = display_streaks["下回った日数"].map(
                 lambda value: f"{int(value)}日"
             )
@@ -505,43 +812,37 @@ if run:
             cell_styles = pd.DataFrame(
                 "", index=display_streaks.index, columns=display_streaks.columns
             )
+            start_years = pd.to_datetime(streaks["開始日"]).dt.year
+            even_year_rows = start_years.mod(2).eq(0)
+            cell_styles.loc[even_year_rows, :] = "background-color: #EEF6FF;"
+            cell_styles.loc[~even_year_rows, :] = "background-color: #FFF7E6;"
             cell_styles.loc[
                 streaks["下回った日数"].gt(30), "下回った日数"
-            ] = "color: #DC2626; font-weight: 700;"
+            ] += " color: #DC2626; font-weight: 700;"
             cell_styles.loc[
                 streaks["下回った日数"].le(7), "下回った日数"
-            ] = "color: #2563EB; font-weight: 700;"
+            ] += " color: #2563EB; font-weight: 700;"
             cell_styles.loc[
                 streaks["期間中最安値（円）"].lt(threshold * 0.9),
                 "期間中最安値（円）",
-            ] = "color: #DC2626; font-weight: 700;"
+            ] += " color: #DC2626; font-weight: 700;"
             cell_styles.loc[
                 streaks[next_high_column].gt(threshold * 1.1), next_high_column
-            ] = "color: #2563EB; font-weight: 700;"
+            ] += " color: #2563EB; font-weight: 700;"
             table_height = 38 * (len(streaks) + 1) + 4
             with st.container(key="desktop_results_table"):
-                styled_streaks = display_streaks.style.apply(
-                    lambda _: cell_styles, axis=None
-                )
-                st.dataframe(
-                    styled_streaks,
-                    hide_index=True,
-                    width=850,
-                    height=table_height,
-                    column_config={
-                        "開始日": st.column_config.TextColumn(width="small"),
-                        "終了日": st.column_config.TextColumn(width="small"),
-                        "下回った日数": st.column_config.TextColumn(
-                            "塩漬日数", width="small"
-                        ),
-                        "期間中最安値（円）": st.column_config.TextColumn(
-                            "塩漬中最安値", width="small"
-                        ),
-                        next_high_column: st.column_config.TextColumn(
-                            "塩漬後の最高値", width="medium"
-                        ),
-                    },
-                    key="desktop_streaks",
+                desktop_column_names = {
+                    "下回った日数": "塩漬日数",
+                    "期間中最安値（円）": "塩漬中最安値",
+                    next_high_column: "塩漬後の最高値",
+                }
+                desktop_display = display_streaks.rename(columns=desktop_column_names)
+                desktop_styles = cell_styles.rename(columns=desktop_column_names)
+                styled_streaks = desktop_display.style.apply(
+                    lambda _: desktop_styles, axis=None
+                ).set_table_styles(TABLE_HEADER_STYLES)
+                render_results_table(
+                    styled_streaks, table_height, limit_vertical_height=False
                 )
 
             with st.container(key="mobile_results_table"):
@@ -558,20 +859,8 @@ if run:
                 )
                 styled_mobile = mobile_display.style.apply(
                     lambda _: mobile_styles, axis=None
-                )
-                st.dataframe(
-                    styled_mobile,
-                    hide_index=True,
-                    width=680,
-                    height=table_height,
-                    column_config={
-                        "開始日": st.column_config.TextColumn(width=145),
-                        "塩漬日数": st.column_config.TextColumn(width="small"),
-                        "塩漬中最安値": st.column_config.TextColumn(width="small"),
-                        "塩漬後の最高値": st.column_config.TextColumn(width="medium"),
-                    },
-                    key="mobile_streaks",
-                )
+                ).set_table_styles(TABLE_HEADER_STYLES)
+                render_results_table(styled_mobile, table_height)
             csv = display_streaks.to_csv(index=False).encode("utf-8-sig")
             st.download_button("結果をCSVで保存", csv, "nissan_price_streaks.csv", "text/csv")
 
