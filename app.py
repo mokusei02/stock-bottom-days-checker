@@ -687,6 +687,37 @@ st.markdown(
         .st-key-mobile_run {
             margin-top: 0.25rem;
         }
+        .st-key-mobile_results_table .results-table-scroll {
+            overflow-x: hidden;
+        }
+        .st-key-mobile_results_table .results-table-scroll table {
+            width: 100%;
+            min-width: 0;
+            table-layout: fixed;
+            font-size: clamp(0.62rem, 2.7vw, 0.76rem);
+        }
+        .st-key-mobile_results_table .results-table-scroll th,
+        .st-key-mobile_results_table .results-table-scroll td {
+            padding: 0.38rem 0.2rem;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+        .st-key-mobile_results_table .results-table-scroll th:nth-child(1),
+        .st-key-mobile_results_table .results-table-scroll td:nth-child(1) {
+            width: 31%;
+        }
+        .st-key-mobile_results_table .results-table-scroll th:nth-child(2),
+        .st-key-mobile_results_table .results-table-scroll td:nth-child(2) {
+            width: 18%;
+        }
+        .st-key-mobile_results_table .results-table-scroll th:nth-child(3),
+        .st-key-mobile_results_table .results-table-scroll td:nth-child(3) {
+            width: 23%;
+        }
+        .st-key-mobile_results_table .results-table-scroll th:nth-child(4),
+        .st-key-mobile_results_table .results-table-scroll td:nth-child(4) {
+            width: 28%;
+        }
         .st-key-desktop_results_table { display: none; }
         .st-key-mobile_results_table { display: block; }
         section[data-testid="stSidebar"] { display: none; }
