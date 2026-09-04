@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
 
 import altair as alt
@@ -32,6 +32,21 @@ def format_date_ja(value) -> str:
 def format_month_ja(value) -> str:
     timestamp = pd.Timestamp(value)
     return f"{timestamp.year}年{timestamp.month}月"
+
+
+def format_price_with_change(value, base_price: float) -> str:
+    if pd.isna(value):
+        return "—"
+    price = Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    if not base_price:
+        return f"{price}円"
+    change = (
+        (Decimal(str(value)) / Decimal(str(base_price)) - Decimal("1"))
+        * Decimal("100")
+    ).quantize(Decimal("1"), rounding=ROUND_DOWN)
+    change_text = format(change, "f")
+    sign = "+" if change > 0 else ""
+    return f"{price}円（{sign}{change_text}％）"
 
 
 def normalize_prices(raw: pd.DataFrame) -> pd.DataFrame:
@@ -911,14 +926,10 @@ if run:
             )
             display_streaks["期間中最安値（円）"] = display_streaks[
                 "期間中最安値（円）"
-            ].map(
-                lambda value: f"{Decimal(str(value)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)}円"
-            )
+            ].map(lambda value: format_price_with_change(value, threshold))
             next_high_column = f"次の{threshold:,.0f}円までの最高値（円）"
             display_streaks[next_high_column] = display_streaks[next_high_column].map(
-                lambda value: "—"
-                if pd.isna(value)
-                else f"{Decimal(str(value)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)}円"
+                lambda value: format_price_with_change(value, threshold)
             )
             cell_styles = pd.DataFrame(
                 "", index=display_streaks.index, columns=display_streaks.columns
