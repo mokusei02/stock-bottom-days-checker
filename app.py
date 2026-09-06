@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+from html import escape
 import json
+import re
 from datetime import date
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
@@ -22,6 +24,37 @@ TABLE_HEADER_STYLES = [
         "selector": "th",
         "props": [("color", "#111111"), ("font-weight", "700")],
     }
+]
+NIKKEI225_CODES = [
+    "4151", "4502", "4503", "4506", "4507", "4519", "4523", "4568", "4578",
+    "285A", "4062", "6479", "6501", "6503", "6504", "6506", "6526", "6645",
+    "6701", "6702", "6723", "6724", "6752", "6753", "6758", "6762", "6770",
+    "6841", "6857", "6861", "6902", "6920", "6954", "6963", "6971", "6976",
+    "6981", "7735", "7751", "7752", "8035",
+    "543A", "7201", "7202", "7203", "7211", "7261", "7267", "7269", "7270",
+    "7272", "4543", "4902", "6146", "7731", "7733", "7741",
+    "9432", "9433", "9434", "9984",
+    "5831", "7186", "8304", "8306", "8308", "8309", "8316", "8331", "8354",
+    "8411", "8253", "8591", "8697", "8601", "8604", "8630", "8725", "8750",
+    "8766", "8795", "1332",
+    "2002", "2269", "2282", "2501", "2502", "2503", "2801", "2802", "2871",
+    "2914", "3086", "3092", "3099", "3382", "7453", "7532", "8233", "8252",
+    "8267", "9843", "9983",
+    "2413", "2432", "3659", "3697", "4307", "4324", "4385", "4661", "4689",
+    "4704", "4751", "4755", "6098", "6178", "6532", "7974", "9602", "9735",
+    "9766", "1605", "3401", "3402", "3861",
+    "3405", "3407", "4004", "4005", "4021", "4042", "4043", "4061", "4063",
+    "4183", "4188", "4208", "4452", "4901", "4911", "6988", "5019", "5020",
+    "5101", "5108", "5201", "5214", "5233", "5301", "5332", "5333", "5401",
+    "5406", "5411", "3436", "5706", "5711", "5713", "5714", "5801", "5802",
+    "5803", "2768", "8001", "8002", "8015", "8031", "8053", "8058",
+    "1721", "1801", "1802", "1803", "1808", "1812", "1925", "1928", "1963",
+    "5631", "6103", "6113", "6273", "6301", "6302", "6305", "6326", "6361",
+    "6367", "6471", "6472", "6473", "7004", "7011", "7013", "7012",
+    "7832", "7911", "7912", "7951", "3289", "8801", "8802", "8804", "8830",
+    "9001", "9005", "9007", "9008", "9009", "9020", "9021", "9022", "9064",
+    "9147", "9101", "9104", "9107", "9201", "9202", "9501", "9502", "9503",
+    "9531", "9532",
 ]
 
 
@@ -252,6 +285,75 @@ def load_company_options() -> list[str]:
     return [f"{row.code}｜{row.name}" for row in companies.itertuples(index=False)]
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def build_light_pickling_ranking(
+    start_date: date, end_date: date
+) -> pd.DataFrame:
+    tickers = [f"{code}.T" for code in NIKKEI225_CODES]
+    raw = yf.download(
+        tickers,
+        start=start_date,
+        end=end_date + pd.Timedelta(days=1),
+        progress=False,
+        auto_adjust=False,
+        group_by="ticker",
+        threads=True,
+    )
+    company_names = {
+        option.split("｜", 1)[0]: option.split("｜", 1)[1]
+        for option in load_company_options()
+    }
+    rows = []
+    for code, ticker in zip(NIKKEI225_CODES, tickers):
+        try:
+            ticker_raw = raw[ticker] if isinstance(raw.columns, pd.MultiIndex) else raw
+            prices = normalize_prices(ticker_raw)
+            current_prices = prices["Close"].dropna()
+            if current_prices.empty:
+                continue
+            current_price = float(current_prices.iloc[-1])
+            streaks = find_streaks(prices, "Low", current_price)
+            if streaks.empty:
+                continue
+            longest_days = int(streaks["下回った日数"].max())
+            lowest_price = float(streaks["期間中最安値（円）"].min())
+            rounded_current = Decimal(str(current_price)).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+            rows.append(
+                {
+                    "最長塩漬け期間": f"{longest_days}日",
+                    "銘柄": company_names.get(code, code),
+                    "_証券コード": code,
+                    "株価": f"{rounded_current:,}円",
+                    "塩漬け回数": f"{len(streaks)}回",
+                    "最安値": format_price_with_change(lowest_price, current_price),
+                    "_最長日数": longest_days,
+                }
+            )
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+    if not rows:
+        return pd.DataFrame(
+            columns=["最長塩漬け期間", "銘柄", "株価", "塩漬け回数", "最安値"]
+        )
+    ranking = (
+        pd.DataFrame(rows)
+        .sort_values(["_最長日数", "銘柄"], ascending=[True, True])
+        .head(10)
+        .reset_index(drop=True)
+    )
+    ranking["銘柄"] = ranking.apply(
+        lambda row: (
+            f'<a href="?ranking_code={row["_証券コード"]}'
+            f'&ranking_start={start_date.year}" target="_self">'
+            f'{escape(str(row["銘柄"]))}</a>'
+        ),
+        axis=1,
+    )
+    return ranking.drop(columns=["_最長日数", "_証券コード"])
+
+
 def add_desktop_search_history(search_values) -> None:
     security_code, threshold, use_current_price, light_pickling_price, start_date, _, _ = search_values
     company_label = next(
@@ -470,6 +572,11 @@ def render_search_controls(
     run = st.button(
         "集計する", type="primary", use_container_width=True, key=f"{key_prefix}_run"
     )
+    st.button(
+        "浅漬けランキング",
+        use_container_width=True,
+        key=f"{key_prefix}_light_pickling_ranking",
+    )
     return (
         security_code,
         threshold,
@@ -487,6 +594,34 @@ st.set_page_config(page_title="塩漬け日数チェッカー", page_icon="📉"
 # now that history is persisted locally, so the address always stays clean.
 if "history" in st.query_params:
     del st.query_params["history"]
+
+# ランキングの企業名リンクから、同じ企業を現在値で自動集計する。
+ranking_code = str(st.query_params.get("ranking_code", "")).strip().upper()
+if ranking_code:
+    ranking_company = next(
+        (
+            option
+            for option in load_company_options()
+            if option.split("｜", 1)[0].strip().upper() == ranking_code
+        ),
+        None,
+    )
+    if ranking_company:
+        try:
+            ranking_start_year = int(st.query_params.get("ranking_start", 2015))
+        except (TypeError, ValueError):
+            ranking_start_year = 2015
+        if ranking_start_year not in START_YEAR_OPTIONS:
+            ranking_start_year = 2015
+        for prefix in ("mobile", "desktop"):
+            st.session_state[f"{prefix}_company"] = ranking_company
+            st.session_state[f"{prefix}_use_current_price"] = True
+            st.session_state[f"{prefix}_light_pickling_price"] = False
+            st.session_state[f"{prefix}_start_year_v2"] = ranking_start_year
+        st.session_state["ranking_company_run"] = True
+    del st.query_params["ranking_code"]
+    if "ranking_start" in st.query_params:
+        del st.query_params["ranking_start"]
 components.html(
     """
     <script>
@@ -554,6 +689,42 @@ st.markdown(
     .st-key-mobile_results_table [role="columnheader"] {
         color: #111111 !important;
         font-weight: 700 !important;
+    }
+    .st-key-desktop_ranking_table .results-table-scroll th {
+        background: #FCE3D2 !important;
+    }
+    .st-key-desktop_ranking_table {
+        max-width: 760px;
+    }
+    .st-key-desktop_ranking_table .results-table-scroll table {
+        min-width: 0;
+        table-layout: fixed;
+    }
+    .st-key-desktop_ranking_table .results-table-scroll th,
+    .st-key-desktop_ranking_table .results-table-scroll td {
+        padding: 0.5rem 0.45rem;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(1),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(1) {
+        width: 18%;
+    }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(2),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(2) {
+        width: 32%;
+    }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(3),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3) {
+        width: 14%;
+    }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(4),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4) {
+        width: 15%;
+    }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(5),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5) {
+        width: 20%;
     }
     .results-table-scroll {
         width: 100%;
@@ -843,6 +1014,56 @@ with st.sidebar:
         add_desktop_search_history(desktop_values)
     render_search_history("desktop")
 
+if st.session_state.pop("ranking_company_run", False):
+    desktop_values = (*desktop_values[:-1], True)
+    add_desktop_search_history(desktop_values)
+
+if st.session_state.get("desktop_light_pickling_ranking", False):
+    ranking_start_date = desktop_values[4]
+    ranking_end_date = desktop_values[5]
+    st.subheader("浅漬けランキング")
+    st.markdown(
+        '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
+        f"{format_month_ja(ranking_start_date)}～現在の価格で購入した場合の、"
+        "過去の最長塩漬け期間のランキングです。"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    try:
+        with st.spinner("日経平均225の株価を集計しています…"):
+            ranking = build_light_pickling_ranking(
+                ranking_start_date, ranking_end_date
+            )
+        if ranking.empty:
+            st.warning("ランキングを作成できる株価データがありませんでした。")
+        else:
+            ranking_styles = pd.DataFrame(
+                "background-color: #FFFFFF;",
+                index=ranking.index,
+                columns=ranking.columns,
+            )
+            for row_index, lowest_value in ranking["最安値"].items():
+                percent_match = re.search(r"（([+-]?\d+)％）", str(lowest_value))
+                if percent_match:
+                    change_percent = int(percent_match.group(1))
+                    text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
+                    ranking_styles.loc[row_index, "最安値"] += (
+                        f" color: {text_color}; font-weight: 700;"
+                    )
+            styled_ranking = ranking.style.apply(
+                lambda _: ranking_styles, axis=None
+            ).set_table_styles(TABLE_HEADER_STYLES)
+            with st.container(key="desktop_ranking_table"):
+                render_results_table(
+                    styled_ranking,
+                    38 * (len(ranking) + 1) + 4,
+                    limit_vertical_height=False,
+                )
+            st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
+    except (RuntimeError, ValueError, KeyError) as error:
+        st.error(f"ランキングを作成できませんでした: {error}")
+    st.stop()
+
 if mobile_values[-1]:
     security_code, threshold, use_current_price, light_pickling_price, start_date, end_date, run = mobile_values
 else:
@@ -1053,4 +1274,3 @@ if run:
     except Exception as exc:
         st.error(f"処理できませんでした: {exc}")
         st.caption("証券コードとインターネット接続をご確認のうえ、もう一度お試しください。")
-
