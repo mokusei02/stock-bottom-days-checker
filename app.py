@@ -1018,9 +1018,16 @@ if st.session_state.pop("ranking_company_run", False):
     desktop_values = (*desktop_values[:-1], True)
     add_desktop_search_history(desktop_values)
 
-if st.session_state.get("desktop_light_pickling_ranking", False):
-    ranking_start_date = desktop_values[4]
-    ranking_end_date = desktop_values[5]
+mobile_ranking_requested = st.session_state.get(
+    "mobile_light_pickling_ranking", False
+)
+desktop_ranking_requested = st.session_state.get(
+    "desktop_light_pickling_ranking", False
+)
+if mobile_ranking_requested or desktop_ranking_requested:
+    ranking_values = mobile_values if mobile_ranking_requested else desktop_values
+    ranking_start_date = ranking_values[4]
+    ranking_end_date = ranking_values[5]
     st.subheader("浅漬けランキング")
     st.markdown(
         '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
@@ -1274,3 +1281,4 @@ if run:
     except Exception as exc:
         st.error(f"処理できませんでした: {exc}")
         st.caption("証券コードとインターネット接続をご確認のうえ、もう一度お試しください。")
+
