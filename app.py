@@ -511,7 +511,7 @@ def render_search_controls(
     )
     security_code = selected_company.split("｜", 1)[0].strip().upper()
     threshold = st.number_input(
-        "XX円（この価格以下）",
+        "この価格以下の塩漬け期間を調べます",
         min_value=0,
         value=320,
         step=1,
