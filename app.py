@@ -572,11 +572,12 @@ def render_search_controls(
     run = st.button(
         "集計する", type="primary", use_container_width=True, key=f"{key_prefix}_run"
     )
-    st.button(
-        "浅漬けランキング",
-        use_container_width=True,
-        key=f"{key_prefix}_light_pickling_ranking",
-    )
+    if key_prefix == "desktop":
+        st.button(
+            "浅漬けランキング",
+            use_container_width=True,
+            key=f"{key_prefix}_light_pickling_ranking",
+        )
     return (
         security_code,
         threshold,
@@ -997,13 +998,12 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True,
 )
-with st.container(key="mobile_search_history"):
-    render_search_history("mobile")
-st.markdown(
-    '<div class="app-footer">制作者：木星在住　'
-    '<a href="https://x.com/mokuseidayo" target="_blank">Twitter</a></div>',
-    unsafe_allow_html=True,
+st.button(
+    "浅漬けランキング",
+    use_container_width=True,
+    key="mobile_light_pickling_ranking",
 )
+ranking_placeholder = st.empty()
 
 with st.sidebar:
     st.header("検索条件")
@@ -1028,48 +1028,57 @@ if mobile_ranking_requested or desktop_ranking_requested:
     ranking_values = mobile_values if mobile_ranking_requested else desktop_values
     ranking_start_date = ranking_values[4]
     ranking_end_date = ranking_values[5]
-    st.subheader("浅漬けランキング")
-    st.markdown(
-        '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
-        f"{format_month_ja(ranking_start_date)}～現在の価格で購入した場合の、"
-        "過去の最長塩漬け期間のランキングです。"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-    try:
-        with st.spinner("日経平均225の株価を集計しています…"):
-            ranking = build_light_pickling_ranking(
-                ranking_start_date, ranking_end_date
-            )
-        if ranking.empty:
-            st.warning("ランキングを作成できる株価データがありませんでした。")
-        else:
-            ranking_styles = pd.DataFrame(
-                "background-color: #FFFFFF;",
-                index=ranking.index,
-                columns=ranking.columns,
-            )
-            for row_index, lowest_value in ranking["最安値"].items():
-                percent_match = re.search(r"（([+-]?\d+)％）", str(lowest_value))
-                if percent_match:
-                    change_percent = int(percent_match.group(1))
-                    text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
-                    ranking_styles.loc[row_index, "最安値"] += (
-                        f" color: {text_color}; font-weight: 700;"
-                    )
-            styled_ranking = ranking.style.apply(
-                lambda _: ranking_styles, axis=None
-            ).set_table_styles(TABLE_HEADER_STYLES)
-            with st.container(key="desktop_ranking_table"):
-                render_results_table(
-                    styled_ranking,
-                    38 * (len(ranking) + 1) + 4,
-                    limit_vertical_height=False,
+    with ranking_placeholder.container():
+        try:
+            with st.spinner("浅漬けランキングを集計しています…"):
+                ranking = build_light_pickling_ranking(
+                    ranking_start_date, ranking_end_date
                 )
-            st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
-    except (RuntimeError, ValueError, KeyError) as error:
-        st.error(f"ランキングを作成できませんでした: {error}")
+            st.subheader("浅漬けランキング")
+            st.markdown(
+                '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
+                f"{format_month_ja(ranking_start_date)}～現在の価格で購入した場合の、"
+                "過去の最長塩漬け期間のランキングです。"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            if ranking.empty:
+                st.warning("ランキングを作成できる株価データがありませんでした。")
+            else:
+                ranking_styles = pd.DataFrame(
+                    "background-color: #FFFFFF;",
+                    index=ranking.index,
+                    columns=ranking.columns,
+                )
+                for row_index, lowest_value in ranking["最安値"].items():
+                    percent_match = re.search(r"（([+-]?\d+)％）", str(lowest_value))
+                    if percent_match:
+                        change_percent = int(percent_match.group(1))
+                        text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
+                        ranking_styles.loc[row_index, "最安値"] += (
+                            f" color: {text_color}; font-weight: 700;"
+                        )
+                styled_ranking = ranking.style.apply(
+                    lambda _: ranking_styles, axis=None
+                ).set_table_styles(TABLE_HEADER_STYLES)
+                with st.container(key="desktop_ranking_table"):
+                    render_results_table(
+                        styled_ranking,
+                        38 * (len(ranking) + 1) + 4,
+                        limit_vertical_height=False,
+                    )
+                st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
+        except (RuntimeError, ValueError, KeyError) as error:
+            st.error(f"ランキングを作成できませんでした: {error}")
     st.stop()
+
+with st.container(key="mobile_search_history"):
+    render_search_history("mobile")
+st.markdown(
+    '<div class="app-footer">制作者：木星在住　'
+    '<a href="https://x.com/mokuseidayo" target="_blank">Twitter</a></div>',
+    unsafe_allow_html=True,
+)
 
 if mobile_values[-1]:
     security_code, threshold, use_current_price, light_pickling_price, start_date, end_date, run = mobile_values
