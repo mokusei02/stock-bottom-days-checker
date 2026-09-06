@@ -860,6 +860,11 @@ st.markdown(
         backdrop-filter: blur(8px);
     }
     @media (max-width: 768px) {
+        .stAppViewBlockContainer,
+        .stMainBlockContainer,
+        [data-testid="stAppViewBlockContainer"] {
+            padding-top: 2.5rem !important;
+        }
         .st-key-mobile_filters { display: block; }
         .st-key-mobile_ranking_controls { display: block; }
         .mobile-ranking-note {
