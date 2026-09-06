@@ -1088,6 +1088,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
             st.subheader("浅漬けランキング")
             st.markdown(
                 '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
+                "現在の株価で購入した場合の<br>"
                 "過去の塩漬け期間が短いランキングです。"
                 "</div>",
                 unsafe_allow_html=True,
