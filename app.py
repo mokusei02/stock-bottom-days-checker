@@ -575,6 +575,7 @@ def render_search_controls(
     if key_prefix == "desktop":
         st.button(
             "浅漬けランキング",
+            type="primary",
             use_container_width=True,
             key=f"{key_prefix}_light_pickling_ranking",
         )
@@ -657,6 +658,7 @@ st.markdown(
     """
     <style>
     .st-key-mobile_filters { display: none; }
+    .st-key-mobile_ranking_controls { display: none; }
     .st-key-mobile_results_table { display: none; }
     .st-key-mobile_search_history { display: none; }
     .st-key-nukazuke_summary {
@@ -828,6 +830,14 @@ st.markdown(
     }
     @media (max-width: 768px) {
         .st-key-mobile_filters { display: block; }
+        .st-key-mobile_ranking_controls { display: block; }
+        .mobile-ranking-note {
+            margin: 0.45rem 0 0.9rem;
+            color: #111111;
+            font-size: 0.875rem;
+            line-height: 1.5;
+            text-align: center;
+        }
         .st-key-nukazuke_summary {
             max-width: 100%;
         }
@@ -998,11 +1008,20 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True,
 )
-st.button(
-    "浅漬けランキング",
-    use_container_width=True,
-    key="mobile_light_pickling_ranking",
-)
+with st.container(key="mobile_ranking_controls"):
+    mobile_ranking_requested = st.button(
+        "浅漬けランキング",
+        type="primary",
+        use_container_width=True,
+        key="mobile_light_pickling_ranking",
+    )
+    if not mobile_ranking_requested:
+        st.markdown(
+            '<div class="mobile-ranking-note">'
+            "現在の株価で購入した場合、塩漬け期間の短いランキングを表示します。"
+            "</div>",
+            unsafe_allow_html=True,
+        )
 ranking_placeholder = st.empty()
 
 with st.sidebar:
@@ -1018,9 +1037,6 @@ if st.session_state.pop("ranking_company_run", False):
     desktop_values = (*desktop_values[:-1], True)
     add_desktop_search_history(desktop_values)
 
-mobile_ranking_requested = st.session_state.get(
-    "mobile_light_pickling_ranking", False
-)
 desktop_ranking_requested = st.session_state.get(
     "desktop_light_pickling_ranking", False
 )
@@ -1037,8 +1053,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
             st.subheader("浅漬けランキング")
             st.markdown(
                 '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
-                f"{format_month_ja(ranking_start_date)}～現在の価格で購入した場合の、"
-                "過去の最長塩漬け期間のランキングです。"
+                "過去の塩漬け期間が短いランキングです。"
                 "</div>",
                 unsafe_allow_html=True,
             )
