@@ -590,6 +590,37 @@ def render_search_controls(
     )
 
 
+def scroll_to_result(anchor_id: str) -> None:
+    """Scroll the app to a completed result section."""
+    encoded_anchor = json.dumps(anchor_id)
+    components.html(
+        f"""
+        <script>
+        (() => {{
+            if (!window.parent.matchMedia("(max-width: 768px)").matches) return;
+            const anchorId = {encoded_anchor};
+            let attempts = 0;
+            const scrollWhenReady = () => {{
+                try {{
+                    const target = window.parent.document.getElementById(anchorId);
+                    if (target) {{
+                        target.scrollIntoView({{ behavior: "smooth", block: "start" }});
+                        return;
+                    }}
+                }} catch (_) {{
+                    return;
+                }}
+                attempts += 1;
+                if (attempts < 20) window.setTimeout(scrollWhenReady, 100);
+            }};
+            window.setTimeout(scrollWhenReady, 100);
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
 st.set_page_config(page_title="塩漬け日数チェッカー", page_icon="📉", layout="wide")
 
 # Older versions stored search history in the URL. Remove that legacy parameter
@@ -1050,6 +1081,10 @@ if mobile_ranking_requested or desktop_ranking_requested:
                 ranking = build_light_pickling_ranking(
                     ranking_start_date, ranking_end_date
                 )
+            st.markdown(
+                '<div id="ranking-results-anchor" style="scroll-margin-top: 4rem;"></div>',
+                unsafe_allow_html=True,
+            )
             st.subheader("浅漬けランキング")
             st.markdown(
                 '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
@@ -1083,6 +1118,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
                         limit_vertical_height=False,
                     )
                 st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
+            scroll_to_result("ranking-results-anchor")
         except (RuntimeError, ValueError, KeyError) as error:
             st.error(f"ランキングを作成できませんでした: {error}")
     st.stop()
@@ -1129,6 +1165,10 @@ if run:
         if column not in prices.columns:
             raise ValueError(f"{label}列がデータにありません。")
 
+        st.markdown(
+            '<div id="search-results-anchor" style="scroll-margin-top: 4rem;"></div>',
+            unsafe_allow_html=True,
+        )
         streaks = find_streaks(prices, column, threshold)
         if light_pickling_price:
             st.info(
@@ -1302,6 +1342,7 @@ if run:
             use_container_width=True,
         )
         render_company_info(company_name, ticker, company_info)
+        scroll_to_result("search-results-anchor")
     except Exception as exc:
         st.error(f"処理できませんでした: {exc}")
         st.caption("証券コードとインターネット接続をご確認のうえ、もう一度お試しください。")
