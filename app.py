@@ -4,7 +4,8 @@ import base64
 from html import escape
 import json
 import re
-from datetime import date
+import threading
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
 
@@ -19,6 +20,9 @@ LABELS = {"Close": "終値", "Low": "安値", "Open": "始値", "High": "高値"
 START_YEAR_OPTIONS = list(range(2000, 2030, 5))
 SEARCH_HISTORY_FILE = Path(__file__).with_name(".search_history.json")
 SEARCH_HISTORY_COOKIE = "stock_search_history"
+RANKING_CACHE_FILE = Path(__file__).with_name(".light_pickling_ranking_cache.json")
+JAPAN_TIMEZONE = timezone(timedelta(hours=9))
+RANKING_REFRESH_TIME = time(16, 0)
 TABLE_HEADER_STYLES = [
     {
         "selector": "th",
@@ -324,8 +328,7 @@ def load_company_options() -> list[str]:
     return [f"{row.code}｜{row.name}" for row in companies.itertuples(index=False)]
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def build_light_pickling_ranking(
+def calculate_light_pickling_ranking(
     start_date: date, end_date: date
 ) -> pd.DataFrame:
     tickers = [f"{code}.T" for code in NIKKEI225_CODES]
@@ -397,6 +400,79 @@ def build_light_pickling_ranking(
         axis=1,
     )
     return ranking.drop(columns=["_最長日数", "_証券コード"])
+
+
+def latest_ranking_refresh_date(now: datetime | None = None) -> date:
+    """Return the latest weekday whose 16:00 JST refresh time has passed."""
+    current = now.astimezone(JAPAN_TIMEZONE) if now else datetime.now(JAPAN_TIMEZONE)
+    refresh_date = current.date()
+    if current.weekday() < 5 and current.time() < RANKING_REFRESH_TIME:
+        refresh_date -= timedelta(days=1)
+    while refresh_date.weekday() >= 5:
+        refresh_date -= timedelta(days=1)
+    return refresh_date
+
+
+@st.cache_resource
+def ranking_cache_state() -> dict:
+    return {"lock": threading.Lock(), "entries": None}
+
+
+def load_ranking_cache() -> dict:
+    try:
+        stored = json.loads(RANKING_CACHE_FILE.read_text(encoding="utf-8"))
+        return stored if isinstance(stored, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        return {}
+
+
+def save_ranking_cache(entries: dict) -> None:
+    temporary_file = RANKING_CACHE_FILE.with_suffix(".tmp")
+    temporary_file.write_text(
+        json.dumps(entries, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    temporary_file.replace(RANKING_CACHE_FILE)
+
+
+def get_light_pickling_ranking(
+    start_date: date, requested_end_date: date
+) -> tuple[pd.DataFrame, date, bool]:
+    """Refresh once after 16:00 JST on weekdays and reuse the saved ranking."""
+    refresh_date = latest_ranking_refresh_date()
+    effective_end_date = min(requested_end_date, refresh_date)
+    cache_key = f"v1:{start_date.isoformat()}:{effective_end_date.isoformat()}"
+    state = ranking_cache_state()
+
+    with state["lock"]:
+        if state["entries"] is None:
+            state["entries"] = load_ranking_cache()
+        cached = state["entries"].get(cache_key)
+        if isinstance(cached, dict) and isinstance(cached.get("records"), list):
+            ranking = pd.DataFrame(
+                cached["records"],
+                columns=cached.get("columns"),
+            )
+            return ranking, refresh_date, False
+
+        ranking = calculate_light_pickling_ranking(start_date, effective_end_date)
+        state["entries"][cache_key] = {
+            "updated_at": datetime.now(JAPAN_TIMEZONE).isoformat(timespec="seconds"),
+            "refresh_date": refresh_date.isoformat(),
+            "start_date": start_date.isoformat(),
+            "end_date": effective_end_date.isoformat(),
+            "columns": list(ranking.columns),
+            "records": ranking.to_dict(orient="records"),
+        }
+        # Keep recent records only so the cache file does not grow without bound.
+        state["entries"] = dict(list(state["entries"].items())[-30:])
+        try:
+            save_ranking_cache(state["entries"])
+        except OSError:
+            # The process-wide cache still prevents repeated aggregation if disk
+            # persistence is temporarily unavailable.
+            pass
+        return ranking, refresh_date, True
 
 
 def add_desktop_search_history(search_values) -> None:
@@ -1170,7 +1246,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
     with ranking_placeholder.container():
         try:
             with st.spinner("浅漬けランキングを集計しています…"):
-                ranking = build_light_pickling_ranking(
+                ranking, ranking_refresh_date, ranking_was_refreshed = get_light_pickling_ranking(
                     ranking_start_date, ranking_end_date
                 )
             st.markdown(
@@ -1178,6 +1254,10 @@ if mobile_ranking_requested or desktop_ranking_requested:
                 unsafe_allow_html=True,
             )
             st.subheader("浅漬けランキング")
+            st.caption(
+                f"更新基準：{format_date_ja(ranking_refresh_date)} 16:00"
+                + ("（更新済み）" if ranking_was_refreshed else "（保存済み）")
+            )
             st.markdown(
                 '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
                 f"現在の株価で購入した場合の{format_month_ja(ranking_start_date)}～<br>"
@@ -1225,78 +1305,6 @@ st.markdown(
     '<div class="app-footer">制作者：木星在住　'
     '<a href="https://x.com/mokuseidayo" target="_blank">Twitter</a></div>',
     unsafe_allow_html=True,
-)
-
-# ローカル確認専用の表示切り替え。公開版にはこのファイルを使用しない。
-components.html(
-    """
-    <script>
-    (() => {
-        const page = window.parent;
-        const host = page.location.hostname;
-        if (host !== "127.0.0.1" && host !== "localhost") return;
-
-        const controlId = "local-view-switcher";
-        if (page.document.getElementById(controlId)) return;
-
-        const control = page.document.createElement("div");
-        control.id = controlId;
-        control.innerHTML = `
-            <span>表示確認</span>
-            <button type="button" data-width="390" data-height="850" data-name="mobilePreview">
-                スマホ版
-            </button>
-            <button type="button" data-width="1366" data-height="850" data-name="desktopPreview">
-                PC版
-            </button>
-        `;
-        Object.assign(control.style, {
-            position: "fixed",
-            right: "16px",
-            bottom: "58px",
-            zIndex: "1002",
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            padding: "7px 8px",
-            border: "1px solid #CBD5E1",
-            borderRadius: "12px",
-            background: "rgba(255,255,255,0.96)",
-            boxShadow: "0 8px 24px rgba(15,23,42,0.14)",
-            color: "#334155",
-            fontFamily: '"Yu Gothic", sans-serif',
-            fontSize: "12px",
-            fontWeight: "700",
-            backdropFilter: "blur(8px)"
-        });
-
-        for (const button of control.querySelectorAll("button")) {
-            Object.assign(button.style, {
-                border: "0",
-                borderRadius: "8px",
-                padding: "7px 10px",
-                background: button.dataset.name === "mobilePreview" ? "#0F766E" : "#334155",
-                color: "#FFFFFF",
-                fontSize: "12px",
-                fontWeight: "700",
-                cursor: "pointer"
-            });
-            button.addEventListener("click", () => {
-                const width = Number(button.dataset.width);
-                const height = Number(button.dataset.height);
-                const preview = page.open(
-                    page.location.href,
-                    button.dataset.name,
-                    `popup=yes,width=${width},height=${height},resizable=yes,scrollbars=yes`
-                );
-                if (preview) preview.focus();
-            });
-        }
-        page.document.body.appendChild(control);
-    })();
-    </script>
-    """,
-    height=0,
 )
 
 if mobile_values[-1]:
@@ -1447,6 +1455,7 @@ if run:
             table_height = 38 * (len(streaks) + 1) + 4
             with st.container(key="desktop_results_table"):
                 desktop_column_names = {
+                    "開始日": "塩漬開始日",
                     "下回った日数": "塩漬日数",
                     "期間中最安値（円）": "塩漬中最安値",
                     next_high_column: "塩漬後の最高値",
@@ -1462,6 +1471,7 @@ if run:
 
             with st.container(key="mobile_results_table"):
                 mobile_column_names = {
+                    "開始日": "塩漬開始日",
                     "下回った日数": "塩漬日数",
                     "期間中最安値（円）": "塩漬中最安値",
                     next_high_column: "塩漬後の最高値",
