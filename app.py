@@ -918,7 +918,7 @@ st.markdown(
             line-height: 1.5;
             text-align: center;
         }
-        .st-key-nukazuke_summary {
+        .review-card{margin:20px 2px 0!important;padding:14px 15px!important;font-size:14px!important;line-height:1.6!important}.review-card-header{gap:9px!important;margin-bottom:6px!important}.review-card-title{font-size:20px!important}.review-card-grade{padding:1px 10px!important;font-size:15px!important}.review-card-disclaimer{margin-top:6px!important;font-size:12px!important;line-height:1.5!important}.st-key-nukazuke_summary {
             max-width: 100%;
         }
         .st-key-nukazuke_summary [data-testid="stHorizontalBlock"] {
@@ -1671,10 +1671,10 @@ if run:
             grade_color = grade_colors[review_grade]
             recent_assessment_html = (
                 f"<div>直近1年の塩漬け開始後（{recent_statistics_period}）の"
-                f"<br>最安値は"
+                f"最安値は"
                 f'<strong style="color:#DC2626;">'
                 f"{recent_low_percent:+d}％（{recent_low:,.0f}円）</strong>で"
-                f'<strong style="color:#DC2626;">{low_assessment}</strong>、<br>'
+                f'<strong style="color:#DC2626;">{low_assessment}</strong>、'
                 f"最高値は"
                 f'<strong style="color:#2563EB;">'
                 f"{recent_high_percent:+d}％（{recent_high:,.0f}円）</strong>で"
@@ -1688,17 +1688,17 @@ if run:
             else f"{threshold:,.0f}円で購入した場合、"
         )
         review_html = (
-            '<div style="margin:36px 16px 0;padding:18px 20px;border:1px solid #CBD5E1;'
+            '<div class="review-card" style="margin:36px 16px 0;padding:18px 20px;border:1px solid #CBD5E1;'
             'border-radius:10px;background:#F8FAFC;line-height:1.8;font-size:18px;">'
-            '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">'
-            '<span style="font-size:22px;font-weight:700;">総評</span>'
-            f'<span style="display:inline-block;padding:1px 12px;border-radius:999px;'
+            '<div class="review-card-header" style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">'
+            '<span class="review-card-title" style="font-size:22px;font-weight:700;">総評</span>'
+            f'<span class="review-card-grade" style="display:inline-block;padding:1px 12px;border-radius:999px;'
             f'background:{grade_color};color:#FFFFFF;font-size:17px;font-weight:700;">'
             f"{grade_label}</span></div>"
             f"<div>{purchase_context}</div>"
             f"<div>{streak_summary}</div>"
             f"{recent_assessment_html}"
-            '<div style="font-size:14px;color:#64748B;margin-top:8px;">'
+            '<div class="review-card-disclaimer" style="font-size:14px;color:#64748B;margin-top:8px;">'
             "※過去の株価に基づく傾向であり、将来の利益を保証するものではありません。"
             "</div></div>"
         )
