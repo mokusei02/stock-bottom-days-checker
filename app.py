@@ -99,11 +99,27 @@ def normalize_prices(raw: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def first_tradeable_date(df: pd.DataFrame, threshold: float):
+    """Return the first day the selected price was within that day's trading range."""
+    if "Low" not in df.columns or "High" not in df.columns:
+        return None
+    daily_range = df[["Low", "High"]].dropna()
+    tradeable = daily_range[
+        (daily_range["Low"] <= threshold) & (daily_range["High"] >= threshold)
+    ]
+    return tradeable.index[0] if not tradeable.empty else None
+
+
 def find_streaks(df: pd.DataFrame, column: str, threshold: float) -> pd.DataFrame:
     prices = df[column].dropna()
+    next_high_column = f"次の{threshold:,.0f}円までの最高値（円）"
+    tradeable_start = first_tradeable_date(df, threshold)
+    if tradeable_start is not None:
+        prices = prices[prices.index >= tradeable_start]
+    else:
+        prices = prices.iloc[0:0]
     below = prices <= threshold
     group = below.ne(below.shift()).cumsum()
-    next_high_column = f"次の{threshold:,.0f}円までの最高値（円）"
     rows = []
     for _, segment in prices[below].groupby(group[below]):
         start, end = segment.index[0], segment.index[-1]
@@ -246,6 +262,19 @@ def get_nukazuke_stage(longest_days: int) -> tuple[Path, str]:
 def render_nukazuke_summary(streaks: pd.DataFrame) -> None:
     longest_days = int(streaks["下回った日数"].max())
     illustration, stage_label = get_nukazuke_stage(longest_days)
+    longest_days_color = "#2563EB" if longest_days <= 60 else "#DC2626"
+    st.markdown(
+        f"""
+        <style>
+        .st-key-nukazuke_summary [data-testid="stColumn"]:nth-child(2)
+        [data-testid="stMetricValue"] {{
+            color: {longest_days_color} !important;
+            font-weight: 700 !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     with st.container(key="nukazuke_summary"):
         count_col, longest_col, illustration_col = st.columns([1, 1, 1.15], gap="small")
         count_col.metric("塩漬け", f"{len(streaks)}回")
@@ -312,6 +341,12 @@ def build_light_pickling_ranking(
             if current_prices.empty:
                 continue
             current_price = float(current_prices.iloc[-1])
+            three_year_cutoff = pd.Timestamp(end_date) - pd.DateOffset(years=3)
+            older_highs = prices.loc[
+                prices.index < three_year_cutoff, "High"
+            ].dropna()
+            if older_highs.empty or float(older_highs.max()) <= current_price:
+                continue
             streaks = find_streaks(prices, "Low", current_price)
             if streaks.empty:
                 continue
@@ -520,7 +555,7 @@ def render_search_controls(
     if not current_price_after_dates:
         use_current_price = st.checkbox(
             "現在の株価",
-            value=False,
+            value=True,
             key=f"{key_prefix}_use_current_price",
             on_change=select_price_mode,
             args=(key_prefix, "use_current_price"),
@@ -553,7 +588,7 @@ def render_search_controls(
     if current_price_after_dates:
         use_current_price = st.checkbox(
             "現在の株価",
-            value=False,
+            value=True,
             key=f"{key_prefix}_use_current_price",
             on_change=select_price_mode,
             args=(key_prefix, "use_current_price"),
@@ -713,11 +748,20 @@ st.markdown(
         width: fit-content;
         min-width: 158px;
         padding: 1rem 1.25rem;
-        background: #dedede;
+        background: linear-gradient(145deg, #FFFFFF 0%, #F8FAFC 100%);
+        border: 1px solid #D8E1EC;
+        border-radius: 14px;
+        box-shadow: 0 7px 20px rgba(15, 23, 42, 0.09);
+        overflow: hidden;
     }
     .st-key-nukazuke_summary [data-testid="stMetricValue"] {
         justify-content: center;
         text-align: center;
+    }
+    .st-key-nukazuke_summary [data-testid="stColumn"]:nth-child(1)
+    [data-testid="stMetricValue"] {
+        color: #111111 !important;
+        font-weight: 700 !important;
     }
     .st-key-desktop_results_table [role="columnheader"],
     .st-key-mobile_results_table [role="columnheader"] {
@@ -1094,7 +1138,10 @@ if mobile_ranking_requested or desktop_ranking_requested:
             st.markdown(
                 '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
                 f"現在の株価で購入した場合の{format_month_ja(ranking_start_date)}～<br>"
-                "過去の塩漬け期間が短いランキングです。"
+                "過去の塩漬け期間が短いランキングです。<br>"
+                "過去3年以前の株価が今の株価を上回らなかった場合、"
+                "現在高値圏の可能性があるため"
+                "ランキングから除外します。"
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -1217,8 +1264,12 @@ if run:
             )
         if streaks.empty:
             st.warning("該当する取引日はありませんでした。")
+            recent_graph_slot = st.empty()
+            full_graph_slot = st.empty()
         else:
             render_nukazuke_summary(streaks)
+            recent_graph_slot = st.empty()
+            full_graph_slot = st.empty()
             display_streaks = streaks.copy()
             display_streaks["開始日"] = display_streaks["開始日"].map(format_date_ja)
             display_streaks["終了日"] = display_streaks["終了日"].map(format_date_ja)
@@ -1315,14 +1366,19 @@ if run:
 
         chart = prices[[column]].dropna().reset_index()
         chart.columns = ["日付", "株価"]
+        tradeable_start = first_tradeable_date(prices, threshold)
         chart["基準以下"] = chart["株価"] <= threshold
+        if tradeable_start is None:
+            chart["基準以下"] = False
+        else:
+            chart["基準以下"] &= chart["日付"] >= tradeable_start
         changes = chart["基準以下"].ne(chart["基準以下"].shift()).cumsum()
         chart["連続区間"] = changes.where(chart["基準以下"])
 
         base = alt.Chart(chart).encode(
             x=alt.X(
                 "日付:T",
-                title="年",
+                title=None,
                 axis=alt.Axis(format="%Y年", tickCount="year", labelAngle=0),
                 scale=alt.Scale(
                     domain=[pd.Timestamp(start_date), pd.Timestamp(end_date)]
@@ -1340,13 +1396,335 @@ if run:
             detail="連続区間:N"
         )
         below_points = below.mark_circle(color="#DC2626", size=45)
+        year_boundaries = pd.DataFrame(
+            {
+                "年初": pd.date_range(
+                    start=pd.Timestamp(start_date).normalize(),
+                    end=pd.Timestamp(end_date).normalize(),
+                    freq="YS",
+                )
+            }
+        )
+        year_lines = alt.Chart(year_boundaries).mark_rule(
+            color="#94A3B8", strokeWidth=1, opacity=0.45
+        ).encode(x="年初:T")
         threshold_line = alt.Chart(pd.DataFrame({"基準価格": [threshold]})).mark_rule(
             color="#DC2626", strokeDash=[6, 4], opacity=0.65
         ).encode(y="基準価格:Q")
-        st.altair_chart(
-            (normal_line + below_line + below_points + threshold_line).properties(height=420),
-            use_container_width=True,
+        recent_end = chart["日付"].max()
+        recent_start = recent_end - pd.DateOffset(years=1)
+        recent_chart = chart[chart["日付"] >= recent_start].copy()
+        recent_base = alt.Chart(recent_chart).encode(
+            x=alt.X(
+                "日付:T",
+                title=None,
+                axis=alt.Axis(
+                    format="%m月",
+                    tickCount="month",
+                    labelAngle=0,
+                    labelOverlap=False,
+                    domain=True,
+                    domainColor="#94A3B8",
+                    domainWidth=1,
+                ),
+                scale=alt.Scale(domain=[recent_start, recent_end]),
+            ),
+            y=alt.Y(
+                "株価:Q",
+                title=f"{label}（円）",
+                axis=alt.Axis(
+                    domain=True,
+                    domainColor="#94A3B8",
+                    domainWidth=1,
+                ),
+                scale=alt.Scale(zero=False),
+            ),
+            tooltip=[
+                alt.Tooltip("日付:T", title="日付", format="%Y年%m月%d日"),
+                alt.Tooltip("株価:Q", title=f"{label}（円）", format=",.2f"),
+            ],
         )
+        recent_normal_line = recent_base.mark_line(color="#2563EB", strokeWidth=2)
+        recent_below = recent_base.transform_filter(alt.datum["基準以下"] == True)
+        recent_below_line = recent_below.mark_line(
+            color="#DC2626", strokeWidth=3
+        ).encode(detail="連続区間:N")
+        recent_below_points = recent_below.mark_circle(color="#DC2626", size=45)
+        month_boundaries = pd.DataFrame(
+            {
+                "月初": pd.date_range(
+                    start=recent_start.normalize(),
+                    end=recent_end.normalize(),
+                    freq="MS",
+                )
+            }
+        )
+        month_lines = alt.Chart(month_boundaries).mark_rule(
+            color="#94A3B8", strokeWidth=1, opacity=0.45
+        ).encode(x="月初:T")
+        recent_threshold_line = alt.Chart(
+            pd.DataFrame({"基準価格": [threshold]})
+        ).mark_rule(color="#DC2626", strokeDash=[6, 4], opacity=0.65).encode(
+            y="基準価格:Q"
+        )
+
+        recent_pickling = recent_chart[recent_chart["基準以下"]].copy()
+        has_recent_pickling = not recent_pickling.empty
+        if has_recent_pickling:
+            recent_evaluation_start = pd.Timestamp(recent_pickling["日付"].min())
+            recent_evaluation_chart = recent_chart[
+                recent_chart["日付"] >= recent_evaluation_start
+            ]
+        else:
+            recent_evaluation_start = recent_start
+            recent_evaluation_chart = recent_chart
+
+        recent_low = float(recent_evaluation_chart["株価"].min())
+        recent_high = float(recent_evaluation_chart["株価"].max())
+        recent_low_date = pd.Timestamp(
+            recent_evaluation_chart.loc[
+                recent_evaluation_chart["株価"].idxmin(), "日付"
+            ]
+        )
+        recent_high_date = pd.Timestamp(
+            recent_evaluation_chart.loc[
+                recent_evaluation_chart["株価"].idxmax(), "日付"
+            ]
+        )
+        extrema_annotations = pd.DataFrame(
+            [
+                {
+                    "日付": recent_low_date,
+                    "株価": recent_low,
+                    "種別": "最安値",
+                    "注記": f"最安値 {recent_low_date.month}/{recent_low_date.day}",
+                },
+                {
+                    "日付": recent_high_date,
+                    "株価": recent_high,
+                    "種別": "最高値",
+                    "注記": f"最高値 {recent_high_date.month}/{recent_high_date.day}",
+                },
+            ]
+            if has_recent_pickling
+            else [],
+            columns=["日付", "株価", "種別", "注記"],
+        )
+        extrema_color = alt.Color(
+            "種別:N",
+            scale=alt.Scale(
+                domain=["最安値", "最高値"],
+                range=["#16A34A", "#16A34A"],
+            ),
+            legend=None,
+        )
+        extrema_rules = alt.Chart(extrema_annotations).mark_rule(
+            strokeDash=[4, 3], strokeWidth=2, opacity=0.65
+        ).encode(x="日付:T", color=extrema_color)
+        extrema_points = alt.Chart(extrema_annotations).mark_point(
+            filled=True, size=130, stroke="#FFFFFF", strokeWidth=2
+        ).encode(
+            x="日付:T",
+            y="株価:Q",
+            color=extrema_color,
+            tooltip=[
+                alt.Tooltip("種別:N", title="区分"),
+                alt.Tooltip("日付:T", title="日付", format="%Y年%m月%d日"),
+                alt.Tooltip("株価:Q", title=f"{label}（円）", format=",.2f"),
+            ],
+        )
+        extrema_labels = alt.Chart(extrema_annotations).mark_text(
+            dy=-14, fontSize=12, fontWeight="bold", color="#16A34A"
+        ).encode(
+            x="日付:T",
+            y="株価:Q",
+            text="注記:N",
+        )
+        with full_graph_slot.container():
+            st.markdown(
+                '<div style="font-size:20px;font-weight:700;">'
+                f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            st.altair_chart(
+                (
+                    year_lines
+                    + normal_line
+                    + below_line
+                    + below_points
+                    + threshold_line
+                ).properties(height=320),
+                use_container_width=True,
+            )
+        full_statistics_period = (
+            f"{format_month_ja(start_date)}～{format_month_ja(end_date)}"
+        )
+        recent_statistics_period = (
+            f"{format_month_ja(recent_evaluation_start)}～"
+            f"{format_month_ja(recent_end)}"
+        )
+        recent_low_percent = int((recent_low / threshold - 1) * 100)
+        recent_high_percent = int((recent_high / threshold - 1) * 100)
+        if recent_low_percent >= 0:
+            low_assessment = "下落による被害はなし"
+        elif recent_low_percent >= -5:
+            low_assessment = "被害はごく少なめ"
+        elif recent_low_percent >= -10:
+            low_assessment = "被害は少なめ"
+        elif recent_low_percent >= -20:
+            low_assessment = "下落の影響はやや大きめ"
+        elif recent_low_percent >= -40:
+            low_assessment = "下落の影響は大きめ"
+        else:
+            low_assessment = "下落の影響は非常に大きめ"
+        if recent_high_percent >= 20:
+            high_assessment = "利益は高め"
+        elif recent_high_percent >= 10:
+            high_assessment = "利益はやや高め"
+        elif recent_high_percent > 0:
+            high_assessment = "利益は小さめ"
+        elif recent_high_percent == 0:
+            high_assessment = "利益はほぼない水準"
+        else:
+            high_assessment = "基準価格まで未回復"
+        if streaks.empty:
+            review_grade = "S"
+            streak_summary = (
+                f"{full_statistics_period}の統計では、この条件の塩漬け期間は"
+                "確認されませんでした。"
+            )
+            outlook_summary = (
+                f"過去データ上、{threshold:,.0f}円以下では塩漬けを避けられています。"
+            )
+            outlook_color = "#2563EB"
+        else:
+            longest_days = int(streaks["下回った日数"].max())
+            streak_count = len(streaks)
+            if longest_days <= 7:
+                review_grade = "S"
+            elif longest_days <= 30:
+                review_grade = "A"
+            elif longest_days <= 90:
+                review_grade = "B"
+            elif longest_days <= 180:
+                review_grade = "C"
+            elif longest_days <= 365:
+                review_grade = "D"
+            else:
+                review_grade = "E"
+            longest_days_color = "#2563EB" if longest_days <= 60 else "#DC2626"
+            streak_summary = (
+                f"{full_statistics_period}の統計では、"
+                f'<strong style="color:{longest_days_color};">'
+                f"最長塩漬けは{longest_days}日</strong>、"
+                f"塩漬け回数は{streak_count}回です。"
+            )
+            if longest_days <= 30 and recent_high_percent > 0:
+                outlook_summary = (
+                    f"過去データ上、{threshold:,.0f}円以下では比較的短期間で"
+                    "基準価格を回復した傾向があります。"
+                )
+                outlook_color = "#2563EB"
+            elif longest_days <= 90:
+                outlook_summary = (
+                    f"{threshold:,.0f}円以下では塩漬け期間が比較的短い傾向ですが、"
+                    "相場状況によって長期化する可能性があります。"
+                )
+                outlook_color = "#DC2626"
+            else:
+                outlook_summary = (
+                    f"{threshold:,.0f}円以下でも塩漬けが長期化した実績があるため、"
+                    "購入時期には注意が必要です。"
+                )
+                outlook_color = "#DC2626"
+        grade_colors = {
+            "S": "#B7791F",
+            "A": "#15803D",
+            "B": "#2563EB",
+            "C": "#0891B2",
+            "D": "#EA580C",
+            "E": "#DC2626",
+        }
+        prices_before_recent_year = prices.loc[
+            prices.index < recent_start, "High"
+        ].dropna()
+        current_high_warning = (
+            use_current_price
+            and not prices_before_recent_year.empty
+            and float(prices_before_recent_year.max()) < threshold
+        )
+        if current_high_warning:
+            grade_label = "評価不可"
+            grade_color = "#64748B"
+            recent_assessment_html = (
+                "<div>現在高値の可能性があるため評価不可です。</div>"
+            )
+        elif not has_recent_pickling:
+            grade_label = "評価不可"
+            grade_color = "#64748B"
+            recent_assessment_html = (
+                "<div>直近1年に塩漬けが始まっていないため評価不可です。</div>"
+            )
+        else:
+            grade_label = f"{review_grade}評価"
+            grade_color = grade_colors[review_grade]
+            recent_assessment_html = (
+                f"<div>直近1年の塩漬け開始後（{recent_statistics_period}）の"
+                f"<br>最安値は"
+                f'<strong style="color:#DC2626;">'
+                f"{recent_low_percent:+d}％（{recent_low:,.0f}円）</strong>で"
+                f'<strong style="color:#DC2626;">{low_assessment}</strong>、<br>'
+                f"最高値は"
+                f'<strong style="color:#2563EB;">'
+                f"{recent_high_percent:+d}％（{recent_high:,.0f}円）</strong>で"
+                f'<strong style="color:#2563EB;">{high_assessment}</strong>です。</div>'
+                f'<div><strong style="color:{outlook_color};">'
+                f"{outlook_summary}</strong></div>"
+            )
+        purchase_context = (
+            f"現在の株価{threshold:,.0f}円で購入した場合、"
+            if use_current_price
+            else f"{threshold:,.0f}円で購入した場合、"
+        )
+        review_html = (
+            '<div style="margin:36px 16px 0;padding:18px 20px;border:1px solid #CBD5E1;'
+            'border-radius:10px;background:#F8FAFC;line-height:1.8;font-size:18px;">'
+            '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">'
+            '<span style="font-size:22px;font-weight:700;">総評</span>'
+            f'<span style="display:inline-block;padding:1px 12px;border-radius:999px;'
+            f'background:{grade_color};color:#FFFFFF;font-size:17px;font-weight:700;">'
+            f"{grade_label}</span></div>"
+            f"<div>{purchase_context}</div>"
+            f"<div>{streak_summary}</div>"
+            f"{recent_assessment_html}"
+            '<div style="font-size:14px;color:#64748B;margin-top:8px;">'
+            "※過去の株価に基づく傾向であり、将来の利益を保証するものではありません。"
+            "</div></div>"
+        )
+        with recent_graph_slot.container():
+            recent_chart_column, review_column = st.columns([12, 13])
+            with recent_chart_column:
+                st.markdown(
+                    '<div style="font-size:20px;font-weight:700;margin-left:48px;">'
+                    "直近1年</div>",
+                    unsafe_allow_html=True,
+                )
+                st.altair_chart(
+                    (
+                        month_lines
+                        + recent_normal_line
+                        + recent_below_line
+                        + recent_below_points
+                        + recent_threshold_line
+                        + extrema_rules
+                        + extrema_points
+                        + extrema_labels
+                    ).properties(height=320),
+                    use_container_width=True,
+                )
+            with review_column:
+                st.markdown(review_html, unsafe_allow_html=True)
         render_company_info(company_name, ticker, company_info)
         scroll_to_result("search-results-anchor")
     except Exception as exc:
