@@ -215,6 +215,16 @@ def get_current_price(ticker: str) -> float:
     return float(closes.iloc[-1])
 
 
+def get_latest_close(prices: pd.DataFrame) -> float:
+    """Use the latest close from the same history displayed in the result."""
+    if prices.empty or "Close" not in prices.columns:
+        raise RuntimeError("現在の株価を取得できませんでした。")
+    closes = prices["Close"].dropna()
+    if closes.empty:
+        raise RuntimeError("現在の株価を取得できませんでした。")
+    return float(closes.iloc[-1])
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_company_info(ticker: str) -> dict:
     try:
@@ -725,8 +735,14 @@ st.markdown(
     <style>
     .st-key-mobile_filters { display: none; }
     .st-key-mobile_ranking_controls { display: none; }
-    .st-key-mobile_results_table { display: none; } .st-key-mobile_full_period_chart { display: none; }
+    .st-key-mobile_results_table { display: none; }
     .st-key-mobile_search_history { display: none; }
+    .st-key-mobile_full_period_graph { display: none; }
+    .recent-period-short { display: none; }
+    .recent-assessment-desktop { display: none; }
+    .recent-assessment-mobile { display: block; }
+    .review-statistics-line,
+    .review-card-note { display: none; }
     .st-key-nukazuke_summary {
         max-width: 680px;
     }
@@ -918,7 +934,7 @@ st.markdown(
             line-height: 1.5;
             text-align: center;
         }
-        .review-card{margin:20px 2px 0!important;padding:14px 15px!important;font-size:14px!important;line-height:1.6!important}.review-card-header{gap:9px!important;margin-bottom:6px!important}.review-card-title{font-size:20px!important}.review-card-grade{padding:1px 10px!important;font-size:15px!important}.review-card-disclaimer{margin-top:6px!important;font-size:12px!important;line-height:1.5!important}.st-key-nukazuke_summary {
+        .st-key-nukazuke_summary {
             max-width: 100%;
         }
         .st-key-nukazuke_summary [data-testid="stHorizontalBlock"] {
@@ -1052,7 +1068,34 @@ st.markdown(
             width: 28%;
         }
         .st-key-desktop_results_table { display: none; }
-        .st-key-mobile_results_table { display: block; } .st-key-mobile_full_period_chart { display: block; } .st-key-desktop_full_period_chart { display: none; } .mobile-review-period { display: none; }
+        .st-key-mobile_results_table { display: block; }
+        .st-key-mobile_full_period_graph { display: block; }
+        .st-key-desktop_full_period_graph { display: none; }
+        .recent-period-long { display: none; }
+        .recent-period-short { display: inline; }
+        .recent-assessment-desktop { display: none; }
+        .recent-assessment-mobile {
+            display: block;
+        }
+        .review-statistics-line { display: none; }
+        .full-period-title {
+            margin-bottom: 0.75rem;
+            font-size: 16px !important;
+            line-height: 1.4;
+            white-space: nowrap;
+        }
+        .review-card {
+            font-size: 16px !important;
+        }
+        .review-card-title {
+            font-size: 20px !important;
+        }
+        .review-card-grade {
+            font-size: 15px !important;
+        }
+        .review-card-note {
+            display: none;
+        }
         .st-key-mobile_search_history {
             display: block;
             margin-top: 1.25rem;
@@ -1184,6 +1227,78 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ローカル確認専用の表示切り替え。公開版にはこのファイルを使用しない。
+components.html(
+    """
+    <script>
+    (() => {
+        const page = window.parent;
+        const host = page.location.hostname;
+        if (host !== "127.0.0.1" && host !== "localhost") return;
+
+        const controlId = "local-view-switcher";
+        if (page.document.getElementById(controlId)) return;
+
+        const control = page.document.createElement("div");
+        control.id = controlId;
+        control.innerHTML = `
+            <span>表示確認</span>
+            <button type="button" data-width="390" data-height="850" data-name="mobilePreview">
+                スマホ版
+            </button>
+            <button type="button" data-width="1366" data-height="850" data-name="desktopPreview">
+                PC版
+            </button>
+        `;
+        Object.assign(control.style, {
+            position: "fixed",
+            right: "16px",
+            bottom: "58px",
+            zIndex: "1002",
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+            padding: "7px 8px",
+            border: "1px solid #CBD5E1",
+            borderRadius: "12px",
+            background: "rgba(255,255,255,0.96)",
+            boxShadow: "0 8px 24px rgba(15,23,42,0.14)",
+            color: "#334155",
+            fontFamily: '"Yu Gothic", sans-serif',
+            fontSize: "12px",
+            fontWeight: "700",
+            backdropFilter: "blur(8px)"
+        });
+
+        for (const button of control.querySelectorAll("button")) {
+            Object.assign(button.style, {
+                border: "0",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                background: button.dataset.name === "mobilePreview" ? "#0F766E" : "#334155",
+                color: "#FFFFFF",
+                fontSize: "12px",
+                fontWeight: "700",
+                cursor: "pointer"
+            });
+            button.addEventListener("click", () => {
+                const width = Number(button.dataset.width);
+                const height = Number(button.dataset.height);
+                const preview = page.open(
+                    page.location.href,
+                    button.dataset.name,
+                    `popup=yes,width=${width},height=${height},resizable=yes,scrollbars=yes`
+                );
+                if (preview) preview.focus();
+            });
+        }
+        page.document.body.appendChild(control);
+    })();
+    </script>
+    """,
+    height=0,
+)
+
 if mobile_values[-1]:
     security_code, threshold, use_current_price, light_pickling_price, start_date, end_date, run = mobile_values
 else:
@@ -1210,9 +1325,9 @@ if run:
                 threshold, light_pickling_days = find_light_pickling_price(
                     prices, column, target_days=30
                 )
-                current_market_price = get_current_price(ticker)
+                current_market_price = get_latest_close(prices)
             elif use_current_price:
-                threshold = get_current_price(ticker)
+                threshold = get_latest_close(prices)
             company_info = get_company_info(ticker)
             company_name = get_company_name(ticker, company_info)
         if column not in prices.columns:
@@ -1471,11 +1586,20 @@ if run:
         recent_pickling = recent_chart[recent_chart["基準以下"]].copy()
         has_recent_pickling = not recent_pickling.empty
         if has_recent_pickling:
+            recent_longest_days = max(
+                (
+                    pd.Timestamp(segment["日付"].iloc[-1])
+                    - pd.Timestamp(segment["日付"].iloc[0])
+                ).days
+                + 1
+                for _, segment in recent_pickling.groupby("連続区間")
+            )
             recent_evaluation_start = pd.Timestamp(recent_pickling["日付"].min())
             recent_evaluation_chart = recent_chart[
                 recent_chart["日付"] >= recent_evaluation_start
             ]
         else:
+            recent_longest_days = 0
             recent_evaluation_start = recent_start
             recent_evaluation_chart = recent_chart
 
@@ -1533,30 +1657,73 @@ if run:
                 alt.Tooltip("株価:Q", title=f"{label}（円）", format=",.2f"),
             ],
         )
-        extrema_labels = alt.Chart(extrema_annotations).mark_text(
+        extrema_high_label = alt.Chart(extrema_annotations).transform_filter(
+            alt.datum["種別"] == "最高値"
+        ).mark_text(
             dy=-14, fontSize=12, fontWeight="bold", color="#16A34A"
         ).encode(
             x="日付:T",
             y="株価:Q",
             text="注記:N",
         )
-        with full_graph_slot.container(key="desktop_full_period_chart"):
-            st.markdown(
-                '<div style="font-size:20px;font-weight:700;">'
-                f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
-                "</div>",
-                unsafe_allow_html=True,
+        extrema_low_label = alt.Chart(extrema_annotations).transform_filter(
+            alt.datum["種別"] == "最安値"
+        ).mark_text(
+            dy=16,
+            baseline="top",
+            fontSize=12,
+            fontWeight="bold",
+            color="#16A34A",
+        ).encode(
+            x="日付:T",
+            y="株価:Q",
+            text="注記:N",
+        )
+        full_period_title = (
+            '<div class="full-period-title" style="font-size:20px;font-weight:700;">'
+            f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
+            "</div>"
+        )
+        full_period_chart = (
+            year_lines
+            + normal_line
+            + below_line
+            + below_points
+            + threshold_line
+        ).properties(height=320)
+        mobile_base = base.encode(
+            x=alt.X(
+                "日付:T",
+                title=None,
+                axis=alt.Axis(
+                    format="%y年",
+                    tickCount="year",
+                    labelAngle=0,
+                    labelOverlap=False,
+                    labelFontSize=9,
+                ),
+                scale=alt.Scale(
+                    domain=[pd.Timestamp(start_date), pd.Timestamp(end_date)]
+                ),
             )
-            st.altair_chart(
-                (
-                    year_lines
-                    + normal_line
-                    + below_line
-                    + below_points
-                    + threshold_line
-                ).properties(height=320),
-                use_container_width=True,
-            )
+        )
+        mobile_normal_line = mobile_base.mark_line(color="#2563EB", strokeWidth=2)
+        mobile_below = mobile_base.transform_filter(alt.datum["基準以下"] == True)
+        mobile_below_line = mobile_below.mark_line(
+            color="#DC2626", strokeWidth=3
+        ).encode(detail="連続区間:N")
+        mobile_below_points = mobile_below.mark_circle(color="#DC2626", size=45)
+        mobile_full_period_chart = (
+            year_lines
+            + mobile_normal_line
+            + mobile_below_line
+            + mobile_below_points
+            + threshold_line
+        ).properties(height=320)
+        with full_graph_slot.container():
+            with st.container(key="desktop_full_period_graph"):
+                st.markdown(full_period_title, unsafe_allow_html=True)
+                st.altair_chart(full_period_chart, use_container_width=True)
         full_statistics_period = (
             f"{format_month_ja(start_date)}～{format_month_ja(end_date)}"
         )
@@ -1566,6 +1733,9 @@ if run:
         )
         recent_low_percent = int((recent_low / threshold - 1) * 100)
         recent_high_percent = int((recent_high / threshold - 1) * 100)
+        recent_longest_days_color = (
+            "#DC2626" if recent_longest_days >= 30 else "#2563EB"
+        )
         if recent_low_percent >= 0:
             low_assessment = "下落による被害はなし"
         elif recent_low_percent >= -5:
@@ -1601,6 +1771,14 @@ if run:
         else:
             longest_days = int(streaks["下回った日数"].max())
             streak_count = len(streaks)
+            outside_recent_year_streaks = streaks[
+                pd.to_datetime(streaks["開始日"]) < recent_start
+            ]
+            outside_recent_year_longest_days = (
+                int(outside_recent_year_streaks["下回った日数"].max())
+                if not outside_recent_year_streaks.empty
+                else None
+            )
             if longest_days <= 7:
                 review_grade = "S"
             elif longest_days <= 30:
@@ -1633,10 +1811,16 @@ if run:
                 )
                 outlook_color = "#DC2626"
             else:
-                outlook_summary = (
-                    f"{threshold:,.0f}円以下でも塩漬けが長期化した実績があるため、"
-                    "購入時期には注意が必要です。"
-                )
+                if outside_recent_year_longest_days is not None:
+                    outlook_summary = (
+                        f"直近一年外で{outside_recent_year_longest_days}日の"
+                        "塩漬け実績があるため、購入時期には注意が必要です。"
+                    )
+                else:
+                    outlook_summary = (
+                        f"{threshold:,.0f}円以下でも塩漬けが長期化した実績があるため、"
+                        "購入時期には注意が必要です。"
+                    )
                 outlook_color = "#DC2626"
         grade_colors = {
             "S": "#B7791F",
@@ -1658,7 +1842,17 @@ if run:
             grade_label = "評価不可"
             grade_color = "#64748B"
             recent_assessment_html = (
-                "<div>現在高値の可能性があるため評価不可です。</div>"
+                f'<div>直近1年の最長塩漬けは'
+                f'<strong style="color:{recent_longest_days_color};">'
+                f'{recent_longest_days}日</strong></div>'
+                f'<div>最安値は<strong style="color:#DC2626;">'
+                f'{recent_low_percent:+d}％（{recent_low:,.0f}円）</strong>で'
+                f'<strong style="color:#DC2626;">{low_assessment}</strong></div>'
+                f'<div>最高値は<strong style="color:#2563EB;">'
+                f'{recent_high_percent:+d}％（{recent_high:,.0f}円）</strong>で'
+                f'<strong style="color:#2563EB;">{high_assessment}</strong></div>'
+                '<br>'
+                '<div>現在高値の可能性があるため評価不可です。</div>'
             )
         elif not has_recent_pickling:
             grade_label = "評価不可"
@@ -1670,15 +1864,28 @@ if run:
             grade_label = f"{review_grade}評価"
             grade_color = grade_colors[review_grade]
             recent_assessment_html = (
-                f'<div><span class="mobile-review-period">直近1年の塩漬け開始後（{recent_statistics_period}）の</span>'
-                f"最安値は"
+                f'<div class="recent-assessment-desktop">直近1年の塩漬け開始後'
+                f'（{recent_statistics_period}）の'
+                f"<br>最安値は"
                 f'<strong style="color:#DC2626;">'
                 f"{recent_low_percent:+d}％（{recent_low:,.0f}円）</strong>で"
-                f'<strong style="color:#DC2626;">{low_assessment}</strong>、'
+                f'<strong style="color:#DC2626;">{low_assessment}</strong>、<br>'
                 f"最高値は"
                 f'<strong style="color:#2563EB;">'
                 f"{recent_high_percent:+d}％（{recent_high:,.0f}円）</strong>で"
                 f'<strong style="color:#2563EB;">{high_assessment}</strong>です。</div>'
+                f'<div class="recent-assessment-mobile">'
+                f'<div>直近1年の最長塩漬けは'
+                f'<strong style="color:{recent_longest_days_color};">'
+                f'{recent_longest_days}日</strong></div>'
+                f'<div>最安値は<strong style="color:#DC2626;">'
+                f'{recent_low_percent:+d}％（{recent_low:,.0f}円）</strong>で'
+                f'<strong style="color:#DC2626;">{low_assessment}</strong></div>'
+                f'<div>最高値は<strong style="color:#2563EB;">'
+                f'{recent_high_percent:+d}％（{recent_high:,.0f}円）</strong>で'
+                f'<strong style="color:#2563EB;">{high_assessment}</strong></div>'
+                f'<br>'
+                f'</div>'
                 f'<div><strong style="color:{outlook_color};">'
                 f"{outlook_summary}</strong></div>"
             )
@@ -1690,15 +1897,15 @@ if run:
         review_html = (
             '<div class="review-card" style="margin:36px 16px 0;padding:18px 20px;border:1px solid #CBD5E1;'
             'border-radius:10px;background:#F8FAFC;line-height:1.8;font-size:18px;">'
-            '<div class="review-card-header" style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">'
+            '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">'
             '<span class="review-card-title" style="font-size:22px;font-weight:700;">総評</span>'
             f'<span class="review-card-grade" style="display:inline-block;padding:1px 12px;border-radius:999px;'
             f'background:{grade_color};color:#FFFFFF;font-size:17px;font-weight:700;">'
             f"{grade_label}</span></div>"
             f"<div>{purchase_context}</div>"
-            f"<div>{streak_summary}</div>"
+            f'<div class="review-statistics-line">{streak_summary}</div>'
             f"{recent_assessment_html}"
-            '<div class="review-card-disclaimer" style="font-size:14px;color:#64748B;margin-top:8px;">'
+            '<div class="review-card-note" style="font-size:14px;color:#64748B;margin-top:8px;">'
             "※過去の株価に基づく傾向であり、将来の利益を保証するものではありません。"
             "</div></div>"
         )
@@ -1719,27 +1926,14 @@ if run:
                         + recent_threshold_line
                         + extrema_rules
                         + extrema_points
-                        + extrema_labels
+                        + extrema_high_label
+                        + extrema_low_label
                     ).properties(height=320),
                     use_container_width=True,
                 )
-            with recent_chart_column.container(key="mobile_full_period_chart"):
-                st.markdown(
-                    '<div style="font-size:20px;font-weight:700;">'
-                    f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-                st.altair_chart(
-                    (
-                        year_lines
-                        + normal_line
-                        + below_line
-                        + below_points
-                        + threshold_line
-                    ).properties(height=320),
-                    use_container_width=True,
-                )
+                with st.container(key="mobile_full_period_graph"):
+                    st.markdown(full_period_title, unsafe_allow_html=True)
+                    st.altair_chart(mobile_full_period_chart, use_container_width=True)
             with review_column:
                 st.markdown(review_html, unsafe_allow_html=True)
         render_company_info(company_name, ticker, company_info)
