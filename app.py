@@ -725,7 +725,7 @@ st.markdown(
     <style>
     .st-key-mobile_filters { display: none; }
     .st-key-mobile_ranking_controls { display: none; }
-    .st-key-mobile_results_table { display: none; }
+    .st-key-mobile_results_table { display: none; } .st-key-mobile_full_period_chart { display: none; }
     .st-key-mobile_search_history { display: none; }
     .st-key-nukazuke_summary {
         max-width: 680px;
@@ -1052,7 +1052,7 @@ st.markdown(
             width: 28%;
         }
         .st-key-desktop_results_table { display: none; }
-        .st-key-mobile_results_table { display: block; }
+        .st-key-mobile_results_table { display: block; } .st-key-mobile_full_period_chart { display: block; } .st-key-desktop_full_period_chart { display: none; } .mobile-review-period { display: none; }
         .st-key-mobile_search_history {
             display: block;
             margin-top: 1.25rem;
@@ -1540,7 +1540,7 @@ if run:
             y="株価:Q",
             text="注記:N",
         )
-        with full_graph_slot.container():
+        with full_graph_slot.container(key="desktop_full_period_chart"):
             st.markdown(
                 '<div style="font-size:20px;font-weight:700;">'
                 f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
@@ -1670,7 +1670,7 @@ if run:
             grade_label = f"{review_grade}評価"
             grade_color = grade_colors[review_grade]
             recent_assessment_html = (
-                f"<div>直近1年の塩漬け開始後（{recent_statistics_period}）の"
+                f'<div><span class="mobile-review-period">直近1年の塩漬け開始後（{recent_statistics_period}）の</span>'
                 f"最安値は"
                 f'<strong style="color:#DC2626;">'
                 f"{recent_low_percent:+d}％（{recent_low:,.0f}円）</strong>で"
@@ -1720,6 +1720,23 @@ if run:
                         + extrema_rules
                         + extrema_points
                         + extrema_labels
+                    ).properties(height=320),
+                    use_container_width=True,
+                )
+            with recent_chart_column.container(key="mobile_full_period_chart"):
+                st.markdown(
+                    '<div style="font-size:20px;font-weight:700;">'
+                    f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                st.altair_chart(
+                    (
+                        year_lines
+                        + normal_line
+                        + below_line
+                        + below_points
+                        + threshold_line
                     ).properties(height=320),
                     use_container_width=True,
                 )
