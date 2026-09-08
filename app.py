@@ -328,9 +328,9 @@ def load_company_options() -> list[str]:
     return [f"{row.code}｜{row.name}" for row in companies.itertuples(index=False)]
 
 
-def calculate_light_pickling_ranking(
+def calculate_light_pickling_rankings(
     start_date: date, end_date: date
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     tickers = [f"{code}.T" for code in NIKKEI225_CODES]
     raw = yf.download(
         tickers,
@@ -358,13 +358,13 @@ def calculate_light_pickling_ranking(
             older_highs = prices.loc[
                 prices.index < three_year_cutoff, "High"
             ].dropna()
-            if older_highs.empty or float(older_highs.max()) <= current_price:
-                continue
             streaks = find_streaks(prices, "Low", current_price)
             if streaks.empty:
                 continue
             longest_days = int(streaks["下回った日数"].max())
             lowest_price = float(streaks["期間中最安値（円）"].min())
+            ranking_lowest_price = float(prices["Low"].dropna().min())
+            lowest_change_percent = (ranking_lowest_price / current_price - 1) * 100
             rounded_current = Decimal(str(current_price)).quantize(
                 Decimal("1"), rounding=ROUND_HALF_UP
             )
@@ -376,30 +376,70 @@ def calculate_light_pickling_ranking(
                     "株価": f"{rounded_current:,}円",
                     "塩漬け回数": f"{len(streaks)}回",
                     "最安値": format_price_with_change(lowest_price, current_price),
+                    "_最安値表示": format_price_with_change(
+                        ranking_lowest_price, current_price
+                    ),
                     "_最長日数": longest_days,
+                    "_最安値騰落率": lowest_change_percent,
+                    "_塩漬け順位対象": (
+                        not older_highs.empty
+                        and float(older_highs.max()) > current_price
+                    ),
                 }
             )
         except (KeyError, TypeError, ValueError, IndexError):
             continue
     if not rows:
-        return pd.DataFrame(
+        empty_ranking = pd.DataFrame(
             columns=["最長塩漬け期間", "銘柄", "株価", "塩漬け回数", "最安値"]
         )
-    ranking = (
-        pd.DataFrame(rows)
+        return empty_ranking, empty_ranking.copy()
+
+    all_rankings = pd.DataFrame(rows)
+    duration_ranking = (
+        all_rankings.loc[all_rankings["_塩漬け順位対象"]]
         .sort_values(["_最長日数", "銘柄"], ascending=[True, True])
         .head(10)
         .reset_index(drop=True)
     )
-    ranking["銘柄"] = ranking.apply(
-        lambda row: (
-            f'<a href="?ranking_code={row["_証券コード"]}'
-            f'&ranking_start={start_date.year}" target="_self">'
-            f'{escape(str(row["銘柄"]))}</a>'
-        ),
-        axis=1,
+    lowest_price_ranking = (
+        all_rankings.sort_values(
+            ["_最安値騰落率", "銘柄"], ascending=[False, True]
+        )
+        .head(10)
+        .reset_index(drop=True)
     )
-    return ranking.drop(columns=["_最長日数", "_証券コード"])
+
+    def finish_ranking(
+        ranking: pd.DataFrame, use_all_period_lowest: bool = False
+    ) -> pd.DataFrame:
+        ranking = ranking.copy()
+        if use_all_period_lowest:
+            ranking["最安値"] = ranking["_最安値表示"]
+        ranking["銘柄"] = ranking.apply(
+            lambda row: (
+                f'<a href="?ranking_code={row["_証券コード"]}'
+                f'&ranking_start={start_date.year}" target="_self">'
+                f'{escape(str(row["銘柄"]))}</a>'
+            ),
+            axis=1,
+        )
+        return ranking.drop(
+            columns=[
+                "_最長日数",
+                "_最安値騰落率",
+                "_最安値表示",
+                "_塩漬け順位対象",
+                "_証券コード",
+            ]
+        )
+
+    finished_lowest_price_ranking = finish_ranking(
+        lowest_price_ranking, use_all_period_lowest=True
+    )[
+        ["最安値", "銘柄", "最長塩漬け期間", "株価", "塩漬け回数"]
+    ]
+    return finish_ranking(duration_ranking), finished_lowest_price_ranking
 
 
 def latest_ranking_refresh_date(now: datetime | None = None) -> date:
@@ -437,32 +477,44 @@ def save_ranking_cache(entries: dict) -> None:
 
 def get_light_pickling_ranking(
     start_date: date, requested_end_date: date
-) -> tuple[pd.DataFrame, date, bool]:
+) -> tuple[pd.DataFrame, pd.DataFrame, date, bool]:
     """Refresh once after 16:00 JST on weekdays and reuse the saved ranking."""
     refresh_date = latest_ranking_refresh_date()
     effective_end_date = min(requested_end_date, refresh_date)
-    cache_key = f"v1:{start_date.isoformat()}:{effective_end_date.isoformat()}"
+    cache_key = f"v4:{start_date.isoformat()}:{effective_end_date.isoformat()}"
     state = ranking_cache_state()
 
     with state["lock"]:
         if state["entries"] is None:
             state["entries"] = load_ranking_cache()
         cached = state["entries"].get(cache_key)
-        if isinstance(cached, dict) and isinstance(cached.get("records"), list):
-            ranking = pd.DataFrame(
-                cached["records"],
-                columns=cached.get("columns"),
+        if (
+            isinstance(cached, dict)
+            and isinstance(cached.get("duration_records"), list)
+            and isinstance(cached.get("lowest_price_records"), list)
+        ):
+            duration_ranking = pd.DataFrame(
+                cached["duration_records"],
+                columns=cached.get("duration_columns"),
             )
-            return ranking, refresh_date, False
+            lowest_price_ranking = pd.DataFrame(
+                cached["lowest_price_records"],
+                columns=cached.get("lowest_price_columns"),
+            )
+            return duration_ranking, lowest_price_ranking, refresh_date, False
 
-        ranking = calculate_light_pickling_ranking(start_date, effective_end_date)
+        duration_ranking, lowest_price_ranking = calculate_light_pickling_rankings(
+            start_date, effective_end_date
+        )
         state["entries"][cache_key] = {
             "updated_at": datetime.now(JAPAN_TIMEZONE).isoformat(timespec="seconds"),
             "refresh_date": refresh_date.isoformat(),
             "start_date": start_date.isoformat(),
             "end_date": effective_end_date.isoformat(),
-            "columns": list(ranking.columns),
-            "records": ranking.to_dict(orient="records"),
+            "duration_columns": list(duration_ranking.columns),
+            "duration_records": duration_ranking.to_dict(orient="records"),
+            "lowest_price_columns": list(lowest_price_ranking.columns),
+            "lowest_price_records": lowest_price_ranking.to_dict(orient="records"),
         }
         # Keep recent records only so the cache file does not grow without bound.
         state["entries"] = dict(list(state["entries"].items())[-30:])
@@ -472,7 +524,7 @@ def get_light_pickling_ranking(
             # The process-wide cache still prevents repeated aggregation if disk
             # persistence is temporarily unavailable.
             pass
-        return ranking, refresh_date, True
+        return duration_ranking, lowest_price_ranking, refresh_date, True
 
 
 def add_desktop_search_history(search_values) -> None:
@@ -860,40 +912,55 @@ st.markdown(
         color: #111111 !important;
         font-weight: 700 !important;
     }
-    .st-key-desktop_ranking_table .results-table-scroll th {
+    .st-key-desktop_ranking_table .results-table-scroll th,
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th {
         background: #FCE3D2 !important;
     }
-    .st-key-desktop_ranking_table {
+    .st-key-desktop_ranking_table,
+    .st-key-desktop_lowest_price_ranking_table {
         max-width: 760px;
     }
-    .st-key-desktop_ranking_table .results-table-scroll table {
+    .st-key-desktop_ranking_table .results-table-scroll table,
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll table {
         min-width: 0;
         table-layout: fixed;
     }
     .st-key-desktop_ranking_table .results-table-scroll th,
-    .st-key-desktop_ranking_table .results-table-scroll td {
+    .st-key-desktop_ranking_table .results-table-scroll td,
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th,
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td {
         padding: 0.5rem 0.45rem;
         white-space: normal;
         overflow-wrap: anywhere;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(1),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(1) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(1),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(1),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1) {
         width: 18%;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(2),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(2) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(2),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(2),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(2) {
         width: 32%;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(3),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(3),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(3) {
         width: 14%;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(4),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(4),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(4) {
         width: 15%;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(5),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(5),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(5) {
         width: 20%;
     }
     .results-table-scroll {
@@ -1246,22 +1313,22 @@ if mobile_ranking_requested or desktop_ranking_requested:
     with ranking_placeholder.container():
         try:
             with st.spinner("浅漬けランキングを集計しています…"):
-                ranking, ranking_refresh_date, ranking_was_refreshed = get_light_pickling_ranking(
-                    ranking_start_date, ranking_end_date
-                )
+                (
+                    ranking,
+                    lowest_price_ranking,
+                    ranking_refresh_date,
+                    ranking_was_refreshed,
+                ) = get_light_pickling_ranking(ranking_start_date, ranking_end_date)
             st.markdown(
                 '<div id="ranking-results-anchor" style="scroll-margin-top: 4rem;"></div>',
                 unsafe_allow_html=True,
             )
             st.subheader("浅漬けランキング")
-            st.caption(
-                f"更新基準：{format_date_ja(ranking_refresh_date)} 16:00"
-                + ("（更新済み）" if ranking_was_refreshed else "（保存済み）")
-            )
             st.markdown(
                 '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
-                f"現在の株価で購入した場合の{format_month_ja(ranking_start_date)}～<br>"
-                "過去の塩漬け期間が短いランキングです。<br>"
+                "現在の株価で購入した場合、<br>"
+                f"{format_month_ja(ranking_start_date)}～現在の塩漬け期間が"
+                "短い順に並べています。<br>"
                 "過去3年以前の株価が今の株価を上回らなかった場合、"
                 "現在高値圏の可能性があるため"
                 "ランキングから除外します。"
@@ -1276,6 +1343,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
                     index=ranking.index,
                     columns=ranking.columns,
                 )
+                ranking_styles.loc[:, "最長塩漬け期間"] += " font-weight: 700;"
                 for row_index, lowest_value in ranking["最安値"].items():
                     percent_match = re.search(r"（([+-]?\d+)％）", str(lowest_value))
                     if percent_match:
@@ -1293,7 +1361,43 @@ if mobile_ranking_requested or desktop_ranking_requested:
                         38 * (len(ranking) + 1) + 4,
                         limit_vertical_height=False,
                     )
+
+                st.subheader("最安値ランキング")
+                st.markdown(
+                    '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
+                    "現在の株価で購入した場合、<br>"
+                    f"{format_month_ja(ranking_start_date)}～現在の最安値までの"
+                    "下落率が小さい順に並べています。"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                lowest_price_styles = pd.DataFrame(
+                    "background-color: #FFFFFF;",
+                    index=lowest_price_ranking.index,
+                    columns=lowest_price_ranking.columns,
+                )
+                for row_index, lowest_value in lowest_price_ranking["最安値"].items():
+                    percent_match = re.search(r"（([+-]?\d+)％）", str(lowest_value))
+                    if percent_match:
+                        change_percent = int(percent_match.group(1))
+                        text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
+                        lowest_price_styles.loc[row_index, "最安値"] += (
+                            f" color: {text_color}; font-weight: 700;"
+                        )
+                styled_lowest_price_ranking = lowest_price_ranking.style.apply(
+                    lambda _: lowest_price_styles, axis=None
+                ).set_table_styles(TABLE_HEADER_STYLES)
+                with st.container(key="desktop_lowest_price_ranking_table"):
+                    render_results_table(
+                        styled_lowest_price_ranking,
+                        38 * (len(lowest_price_ranking) + 1) + 4,
+                        limit_vertical_height=False,
+                    )
                 st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
+                st.caption(
+                    f"更新基準：{format_date_ja(ranking_refresh_date)} 16:00"
+                    + ("（更新済み）" if ranking_was_refreshed else "（保存済み）")
+                )
             scroll_to_result("ranking-results-anchor")
         except (RuntimeError, ValueError, KeyError) as error:
             st.error(f"ランキングを作成できませんでした: {error}")
@@ -1397,7 +1501,12 @@ if run:
             display_streaks["開始日"] = display_streaks["開始日"].map(format_date_ja)
             display_streaks["終了日"] = display_streaks["終了日"].map(format_date_ja)
             latest_prices = prices[column].dropna()
-            if not latest_prices.empty and latest_prices.iloc[-1] <= threshold:
+            ongoing_rows = pd.Series(False, index=streaks.index)
+            if (
+                not use_current_price
+                and not latest_prices.empty
+                and latest_prices.iloc[-1] < threshold
+            ):
                 latest_date = latest_prices.index[-1].date()
                 ongoing_rows = streaks["終了日"].eq(latest_date)
                 display_streaks.loc[ongoing_rows, "終了日"] = "—"
@@ -1411,6 +1520,7 @@ if run:
             display_streaks[next_high_column] = display_streaks[next_high_column].map(
                 lambda value: format_price_with_change(value, threshold)
             )
+            display_streaks.loc[ongoing_rows, next_high_column] = "現在塩漬中"
             cell_styles = pd.DataFrame(
                 "", index=display_streaks.index, columns=display_streaks.columns
             )
@@ -1452,10 +1562,13 @@ if run:
             cell_styles.loc[
                 streaks[next_high_column].gt(threshold * 1.1), next_high_column
             ] += " color: #2563EB; font-weight: 700;"
+            cell_styles.loc[ongoing_rows, next_high_column] += (
+                " color: #DC2626; font-weight: 700;"
+            )
             table_height = 38 * (len(streaks) + 1) + 4
             with st.container(key="desktop_results_table"):
                 desktop_column_names = {
-                    "開始日": "塩漬開始日",
+                    "開始日": f"{threshold:,.0f}円塩漬開始日",
                     "下回った日数": "塩漬日数",
                     "期間中最安値（円）": "塩漬中最安値",
                     next_high_column: "塩漬後の最高値",
@@ -1471,7 +1584,7 @@ if run:
 
             with st.container(key="mobile_results_table"):
                 mobile_column_names = {
-                    "開始日": "塩漬開始日",
+                    "開始日": f"{threshold:,.0f}円塩漬開始日",
                     "下回った日数": "塩漬日数",
                     "期間中最安値（円）": "塩漬中最安値",
                     next_high_column: "塩漬後の最高値",
@@ -1821,9 +1934,17 @@ if run:
                 )
                 outlook_color = "#DC2626"
             else:
-                if outside_recent_year_longest_days is not None:
+                if (
+                    outside_recent_year_longest_days is not None
+                    and outside_recent_year_longest_days > recent_longest_days
+                ):
                     outlook_summary = (
                         f"直近一年外で{outside_recent_year_longest_days}日の"
+                        "塩漬け実績があるため、購入時期には注意が必要です。"
+                    )
+                elif has_recent_pickling:
+                    outlook_summary = (
+                        f"直近一年で{recent_longest_days}日の"
                         "塩漬け実績があるため、購入時期には注意が必要です。"
                     )
                 else:
@@ -1924,7 +2045,7 @@ if run:
             with recent_chart_column:
                 st.markdown(
                     '<div style="font-size:20px;font-weight:700;margin-left:48px;">'
-                    "直近1年</div>",
+                    f"直近1年　【{escape(company_name)}】</div>",
                     unsafe_allow_html=True,
                 )
                 st.altair_chart(
@@ -1951,4 +2072,3 @@ if run:
     except Exception as exc:
         st.error(f"処理できませんでした: {exc}")
         st.caption("証券コードとインターネット接続をご確認のうえ、もう一度お試しください。")
-
