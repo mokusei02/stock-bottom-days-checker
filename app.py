@@ -86,6 +86,20 @@ def format_price_with_change(value, base_price: float) -> str:
     return f"{price}円（{sign}{change_text}％）"
 
 
+def format_ranking_lowest_for_responsive_display(value) -> str:
+    """Keep the ranking value inline on desktop and split it on mobile."""
+    text = str(value)
+    match = re.fullmatch(r"(.+?円)（([+-]?\d+％)）", text)
+    if not match:
+        return escape(text)
+    return (
+        f'<span class="ranking-lowest-price">{escape(match.group(1))}</span>'
+        '<span class="ranking-lowest-paren">（</span>'
+        f'<span class="ranking-lowest-change">{escape(match.group(2))}</span>'
+        '<span class="ranking-lowest-paren">）</span>'
+    )
+
+
 def normalize_prices(raw: pd.DataFrame) -> pd.DataFrame:
     """Return a date-indexed OHLC frame, accepting yfinance or ordinary CSV data."""
     df = raw.copy()
@@ -963,6 +977,36 @@ st.markdown(
     .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(5) {
         width: 20%;
     }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(1),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(1) { width: 17%; }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(2),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(2) { width: 29%; }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(3),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3) { width: 13%; }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(4),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4) { width: 14%; }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(5),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5) { width: 27%; }
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(1),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1) { width: 27%; }
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(2),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(2) { width: 29%; }
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(3),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(3) { width: 20%; }
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(4),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(4) { width: 13%; }
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(5),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(5) { width: 11%; }
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1) {
+        white-space: nowrap;
+        overflow-wrap: normal;
+    }
+    .ranking-lowest-price,
+    .ranking-lowest-change,
+    .ranking-lowest-paren {
+        display: inline;
+    }
     .results-table-scroll {
         width: 100%;
         overflow: auto;
@@ -1070,6 +1114,46 @@ st.markdown(
         }
         .st-key-mobile_filters { display: block; }
         .st-key-mobile_ranking_controls { display: block; }
+        .st-key-desktop_ranking_table .results-table-scroll table,
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll table {
+            font-size: clamp(0.62rem, 2.7vw, 0.75rem);
+        }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(1),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(1) { width: 17%; }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(2),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(2) { width: 29%; }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(3),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3) { width: 13%; }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(4),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4) { width: 14%; }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(5),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5) { width: 27%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(1),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1) { width: 27%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(2),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(2) { width: 29%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(3),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(3) { width: 20%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(4),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(4) { width: 13%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(5),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(5) { width: 11%; }
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(4),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(5) {
+            white-space: nowrap;
+            overflow-wrap: normal;
+        }
+        .ranking-lowest-price,
+        .ranking-lowest-change {
+            display: block;
+        }
+        .ranking-lowest-paren {
+            display: none;
+        }
         .mobile-ranking-note {
             margin: 0.45rem 0 0.9rem;
             color: #111111;
@@ -1338,6 +1422,10 @@ if mobile_ranking_requested or desktop_ranking_requested:
             if ranking.empty:
                 st.warning("ランキングを作成できる株価データがありませんでした。")
             else:
+                ranking = ranking.copy()
+                ranking["最安値"] = ranking["最安値"].map(
+                    format_ranking_lowest_for_responsive_display
+                )
                 ranking_styles = pd.DataFrame(
                     "background-color: #FFFFFF;",
                     index=ranking.index,
@@ -1345,7 +1433,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
                 )
                 ranking_styles.loc[:, "最長塩漬け期間"] += " font-weight: 700;"
                 for row_index, lowest_value in ranking["最安値"].items():
-                    percent_match = re.search(r"（([+-]?\d+)％）", str(lowest_value))
+                    percent_match = re.search(r"([+-]?\d+)％", str(lowest_value))
                     if percent_match:
                         change_percent = int(percent_match.group(1))
                         text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
@@ -1371,13 +1459,17 @@ if mobile_ranking_requested or desktop_ranking_requested:
                     "</div>",
                     unsafe_allow_html=True,
                 )
+                lowest_price_ranking = lowest_price_ranking.copy()
+                lowest_price_ranking["最安値"] = lowest_price_ranking["最安値"].map(
+                    format_ranking_lowest_for_responsive_display
+                )
                 lowest_price_styles = pd.DataFrame(
                     "background-color: #FFFFFF;",
                     index=lowest_price_ranking.index,
                     columns=lowest_price_ranking.columns,
                 )
                 for row_index, lowest_value in lowest_price_ranking["最安値"].items():
-                    percent_match = re.search(r"（([+-]?\d+)％）", str(lowest_value))
+                    percent_match = re.search(r"([+-]?\d+)％", str(lowest_value))
                     if percent_match:
                         change_percent = int(percent_match.group(1))
                         text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
