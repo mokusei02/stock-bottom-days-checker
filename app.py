@@ -792,7 +792,7 @@ def render_search_controls(
     )
     if key_prefix == "desktop":
         st.button(
-            "浅漬けランキング",
+            "最安値ランキング",
             type="primary",
             use_container_width=True,
             key=f"{key_prefix}_light_pickling_ranking",
@@ -1391,7 +1391,7 @@ st.markdown(
 )
 with st.container(key="mobile_ranking_controls"):
     mobile_ranking_requested = st.button(
-        "浅漬けランキング",
+        "最安値ランキング",
         type="primary",
         use_container_width=True,
         key="mobile_light_pickling_ranking",
@@ -1399,7 +1399,7 @@ with st.container(key="mobile_ranking_controls"):
     if not mobile_ranking_requested:
         st.markdown(
             '<div class="mobile-ranking-note">'
-            "現在の株価で購入した場合、塩漬け期間の短いランキングを表示します。"
+            "現在の株価から最安値までの下落率が小さいランキングを表示します。"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1427,9 +1427,9 @@ if mobile_ranking_requested or desktop_ranking_requested:
     ranking_end_date = ranking_values[5]
     with ranking_placeholder.container():
         try:
-            with st.spinner("浅漬けランキングを集計しています…"):
+            with st.spinner("最安値ランキングを集計しています…"):
                 (
-                    ranking,
+                    _,
                     lowest_price_ranking,
                     ranking_refresh_date,
                     ranking_was_refreshed,
@@ -1438,59 +1438,19 @@ if mobile_ranking_requested or desktop_ranking_requested:
                 '<div id="ranking-results-anchor" style="scroll-margin-top: 4rem;"></div>',
                 unsafe_allow_html=True,
             )
-            st.subheader("浅漬けランキング")
+            st.subheader("最安値ランキング")
             show_saved_data_status(saved_snapshot()[1]["ranking"])
             st.markdown(
                 '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
                 "現在の株価で購入した場合、<br>"
-                f"{format_month_ja(ranking_start_date)}～現在の塩漬け期間が"
-                "短い順に並べています。<br>"
-                "過去3年以前の株価が今の株価を上回らなかった場合、"
-                "現在高値圏の可能性があるため"
-                "ランキングから除外します。"
+                f"{format_month_ja(ranking_start_date)}～現在の最安値までの"
+                "下落率が小さい順に並べています。"
                 "</div>",
                 unsafe_allow_html=True,
             )
-            if ranking.empty:
+            if lowest_price_ranking.empty:
                 st.warning("ランキングを作成できる株価データがありませんでした。")
             else:
-                ranking = ranking.copy()
-                ranking["最安値"] = ranking["最安値"].map(
-                    format_ranking_lowest_for_responsive_display
-                )
-                ranking_styles = pd.DataFrame(
-                    "background-color: #FFFFFF;",
-                    index=ranking.index,
-                    columns=ranking.columns,
-                )
-                ranking_styles.loc[:, "最長塩漬け期間"] += " font-weight: 700;"
-                for row_index, lowest_value in ranking["最安値"].items():
-                    percent_match = re.search(r"([+-]?\d+)％", str(lowest_value))
-                    if percent_match:
-                        change_percent = int(percent_match.group(1))
-                        text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
-                        ranking_styles.loc[row_index, "最安値"] += (
-                            f" color: {text_color}; font-weight: 700;"
-                        )
-                styled_ranking = ranking.style.apply(
-                    lambda _: ranking_styles, axis=None
-                ).set_table_styles(TABLE_HEADER_STYLES)
-                with st.container(key="desktop_ranking_table"):
-                    render_results_table(
-                        styled_ranking,
-                        38 * (len(ranking) + 1) + 4,
-                        limit_vertical_height=False,
-                    )
-
-                st.subheader("最安値ランキング")
-                st.markdown(
-                    '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
-                    "現在の株価で購入した場合、<br>"
-                    f"{format_month_ja(ranking_start_date)}～現在の最安値までの"
-                    "下落率が小さい順に並べています。"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
                 lowest_price_ranking = lowest_price_ranking.copy()
                 lowest_price_ranking["最安値"] = lowest_price_ranking["最安値"].map(
                     format_ranking_lowest_for_responsive_display
@@ -1519,7 +1479,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
                     )
                 st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
                 st.caption(
-                    f"株価データ基準日：{format_date_ja(ranking_refresh_date)}"
+                    f"更新基準：{format_date_ja(ranking_refresh_date)} 16:00"
                     + ("（更新済み）" if ranking_was_refreshed else "（保存済み）")
                 )
             scroll_to_result("ranking-results-anchor")
