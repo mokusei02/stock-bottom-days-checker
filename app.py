@@ -104,6 +104,34 @@ def format_ranking_lowest_for_responsive_display(value) -> str:
     )
 
 
+def render_ranking_table(frame: pd.DataFrame, key: str, bold_longest=False) -> None:
+    """Render either ranking with exactly the same columns and styling."""
+    display = frame.copy()
+    display["最安値"] = display["最安値"].map(
+        format_ranking_lowest_for_responsive_display
+    )
+    styles = pd.DataFrame(
+        "background-color: #FFFFFF;", index=display.index, columns=display.columns
+    )
+    if bold_longest and "最長塩漬け期間" in styles:
+        styles.loc[:, "最長塩漬け期間"] += " font-weight: 700;"
+    for row_index, lowest_value in display["最安値"].items():
+        percent_match = re.search(r"([+-]?\d+)％", str(lowest_value))
+        if percent_match:
+            change_percent = int(percent_match.group(1))
+            text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
+            styles.loc[row_index, "最安値"] += (
+                f" color: {text_color}; font-weight: 700;"
+            )
+    styled = display.style.apply(lambda _: styles, axis=None).set_table_styles(
+        TABLE_HEADER_STYLES
+    )
+    with st.container(key=key):
+        render_results_table(
+            styled, 38 * (len(display) + 1) + 4, limit_vertical_height=False
+        )
+
+
 def normalize_prices(raw: pd.DataFrame) -> pd.DataFrame:
     """Return a date-indexed OHLC frame, accepting yfinance or ordinary CSV data."""
     df = raw.copy()
@@ -230,12 +258,8 @@ def saved_ranking_frame(revision, ranking):
 
 
 def show_saved_data_status(entry):
-    as_of = entry.get("latest_date", entry.get("as_of", "不明"))
-    fetched = datetime.fromisoformat(entry["fetched_at"]).astimezone(JAPAN_TIMEZONE)
-    st.caption(f"保存株価の最終取引日：{as_of} ／ 取得日時：{fetched:%Y/%m/%d %H:%M}（日本時間）")
-    st.caption("平日16時以降に日次更新します。更新に失敗した日は前回の保存データを表示します。リアルタイム株価ではありません。")
-    if date.fromisoformat(as_of) < latest_ranking_refresh_date():
-        st.info("前回の保存株価を表示しています（休場日・更新待ち・取得失敗の場合を含みます）。")
+    """Saved-data details are intentionally kept out of the user-facing UI."""
+    return None
 
 
 def download_prices(ticker: str, start: date, end: date) -> pd.DataFrame:
@@ -1515,7 +1539,8 @@ with st.sidebar:
         desktop_values = (*desktop_values[:-1], True)
     if desktop_values[-1]:
         add_desktop_search_history(desktop_values)
-    render_search_history("desktop")
+    if not st.session_state.get("desktop_light_pickling_ranking", False):
+        render_search_history("desktop")
 
 if st.session_state.pop("ranking_company_run", False):
     desktop_values = (*desktop_values[:-1], True)
@@ -1525,14 +1550,27 @@ desktop_ranking_requested = st.session_state.get(
     "desktop_light_pickling_ranking", False
 )
 if mobile_ranking_requested or desktop_ranking_requested:
+    st.markdown(
+        """
+        <style>
+        /* A ranking is a standalone view. Hide stale search output that may
+           remain below it when Streamlit stops the current rerun early. */
+        .st-key-ranking_only_view ~ *,
+        .stVerticalBlock > div:has(> .st-key-ranking_only_view) ~ * {
+            display: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     ranking_values = mobile_values if mobile_ranking_requested else desktop_values
     ranking_start_date = ranking_values[4]
     ranking_end_date = ranking_values[5]
-    with ranking_placeholder.container():
+    with st.container(key="ranking_only_view"):
         try:
             with st.spinner("最安値ランキングを集計しています…"):
                 (
-                    _,
+                    shallow_ranking,
                     lowest_price_ranking,
                     ranking_refresh_date,
                     ranking_was_refreshed,
@@ -1554,37 +1592,34 @@ if mobile_ranking_requested or desktop_ranking_requested:
             if lowest_price_ranking.empty:
                 st.warning("ランキングを作成できる株価データがありませんでした。")
             else:
-                lowest_price_ranking = lowest_price_ranking.copy()
-                lowest_price_ranking["最安値"] = lowest_price_ranking["最安値"].map(
-                    format_ranking_lowest_for_responsive_display
+                render_ranking_table(
+                    lowest_price_ranking,
+                    "desktop_lowest_price_ranking_table",
                 )
-                lowest_price_styles = pd.DataFrame(
-                    "background-color: #FFFFFF;",
-                    index=lowest_price_ranking.index,
-                    columns=lowest_price_ranking.columns,
+            st.subheader("浅漬けランキング")
+            st.markdown(
+                '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
+                "現在の株価で購入した場合、<br>"
+                f"{format_month_ja(ranking_start_date)}～現在の塩漬け期間が"
+                "短い順に並べています。<br>"
+                "過去3年以前の株価が今の株価を上回らなかった場合、"
+                "現在高値圏の可能性があるためランキングから除外します。"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            if shallow_ranking.empty:
+                st.warning("ランキングを作成できる株価データがありませんでした。")
+            else:
+                render_ranking_table(
+                    shallow_ranking,
+                    "desktop_ranking_table",
+                    bold_longest=True,
                 )
-                for row_index, lowest_value in lowest_price_ranking["最安値"].items():
-                    percent_match = re.search(r"([+-]?\d+)％", str(lowest_value))
-                    if percent_match:
-                        change_percent = int(percent_match.group(1))
-                        text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
-                        lowest_price_styles.loc[row_index, "最安値"] += (
-                            f" color: {text_color}; font-weight: 700;"
-                        )
-                styled_lowest_price_ranking = lowest_price_ranking.style.apply(
-                    lambda _: lowest_price_styles, axis=None
-                ).set_table_styles(TABLE_HEADER_STYLES)
-                with st.container(key="desktop_lowest_price_ranking_table"):
-                    render_results_table(
-                        styled_lowest_price_ranking,
-                        38 * (len(lowest_price_ranking) + 1) + 4,
-                        limit_vertical_height=False,
-                    )
-                st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
-                st.caption(
-                    f"更新基準：{format_date_ja(ranking_refresh_date)} 16:00"
-                    + ("（更新済み）" if ranking_was_refreshed else "（保存済み）")
-                )
+            st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
+            st.caption(
+                f"更新基準：{format_date_ja(ranking_refresh_date)} 16:00"
+                + ("（更新済み）" if ranking_was_refreshed else "（保存済み）")
+            )
             render_app_banners(
                 ranking_values[0],
                 "mobile" if mobile_ranking_requested else "desktop",
@@ -1654,8 +1689,6 @@ if run:
             st.info(
                 f"浅漬け株価：{threshold:,.0f}円（最長{light_pickling_days}日）を基準にしています。"
             )
-        elif use_current_price:
-            st.info(f"保存データの終値（{end_date:%Y/%m/%d}）：{threshold:,.0f}円を基準にしています。")
         if light_pickling_price:
             price_difference = current_market_price - threshold
             difference_percent = (
