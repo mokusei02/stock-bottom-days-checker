@@ -401,8 +401,8 @@ def render_app_banners(
     )
     salt_query = f"?{common}&amp;app_start_year={int(start_year)}"
     banner_items = [
-        (assets / "absolute-safe-nanpin-banner.png", f"/{nanpin_query}", "絶対安全ナンピン君"),
-        (assets / "stock-bottom-days-banner.png", f"https://stock-bottom-days-checker-jmmq6nsrbctl7h9udblgpx.streamlit.app/{salt_query}", "塩漬け日数チェッカー"),
+        (assets / "absolute-safe-nanpin-banner.png", f"/nanpin{nanpin_query}", "絶対安全ナンピン君"),
+        (assets / "stock-bottom-days-banner.png", f"/{salt_query}", "塩漬け日数チェッカー"),
     ]
     cards = []
     for image_path, destination, label in banner_items:
@@ -924,6 +924,7 @@ st.markdown(
     """
     <style>
     .st-key-mobile_filters { display: none; }
+    [data-testid="stSidebarNav"] { display: none; }
     .st-key-mobile_ranking_controls { display: none; }
     .st-key-mobile_results_table { display: none; }
     .st-key-mobile_search_history { display: none; }
