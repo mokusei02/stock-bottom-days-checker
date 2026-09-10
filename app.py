@@ -1744,9 +1744,10 @@ if mobile_ranking_requested or desktop_ranking_requested:
 
 with st.container(key="mobile_search_history"):
     render_search_history("mobile")
-    render_app_banners(
-        mobile_values[0], "mobile", mobile_values[4].year, carry_conditions=False
-    )
+    if not mobile_values[-1] and not desktop_values[-1]:
+        render_app_banners(
+            mobile_values[0], "mobile", mobile_values[4].year, carry_conditions=False
+        )
 if not mobile_values[-1] and not desktop_values[-1]:
     with st.container(key="desktop_initial_banners"):
         render_app_banners(
