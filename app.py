@@ -15,6 +15,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 
+# Use an app-owned writable location for yfinance's timezone and cookie caches.
+yf.set_tz_cache_location(str(Path(__file__).with_name(".yfinance-cache")))
+
 
 LABELS = {"Close": "終値", "Low": "安値", "Open": "始値", "High": "高値"}
 START_YEAR_OPTIONS = list(range(2000, 2030, 5))
@@ -353,7 +356,8 @@ def calculate_light_pickling_rankings(
         progress=False,
         auto_adjust=False,
         group_by="ticker",
-        threads=True,
+        # Avoid SQLite initialization/write contention on a fresh deployment.
+        threads=False,
     )
     company_names = {
         option.split("｜", 1)[0]: option.split("｜", 1)[1]
@@ -495,7 +499,7 @@ def get_light_pickling_ranking(
     """Refresh once after 16:00 JST on weekdays and reuse the saved ranking."""
     refresh_date = latest_ranking_refresh_date()
     effective_end_date = min(requested_end_date, refresh_date)
-    cache_key = f"v4:{start_date.isoformat()}:{effective_end_date.isoformat()}"
+    cache_key = f"v5:{start_date.isoformat()}:{effective_end_date.isoformat()}"
     state = ranking_cache_state()
 
     with state["lock"]:
@@ -506,6 +510,7 @@ def get_light_pickling_ranking(
             isinstance(cached, dict)
             and isinstance(cached.get("duration_records"), list)
             and isinstance(cached.get("lowest_price_records"), list)
+            and (cached["duration_records"] or cached["lowest_price_records"])
         ):
             duration_ranking = pd.DataFrame(
                 cached["duration_records"],
@@ -520,6 +525,11 @@ def get_light_pickling_ranking(
         duration_ranking, lowest_price_ranking = calculate_light_pickling_rankings(
             start_date, effective_end_date
         )
+        if duration_ranking.empty and lowest_price_ranking.empty:
+            raise RuntimeError(
+                "株価データを取得できませんでした。通信状態を確認して再度お試しください。"
+                "取得失敗の結果は保存していません。"
+            )
         state["entries"][cache_key] = {
             "updated_at": datetime.now(JAPAN_TIMEZONE).isoformat(timespec="seconds"),
             "refresh_date": refresh_date.isoformat(),

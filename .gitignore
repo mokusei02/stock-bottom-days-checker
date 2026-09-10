@@ -1,3 +1,5 @@
 __pycache__/
 *.py[cod]
 .search_history.json
+.yfinance-cache/
+.light_pickling_ranking_cache.json
