@@ -455,10 +455,12 @@ def render_app_banners(
         .st-key-{salt_key} [data-testid="stPageLink"] a:hover,
         .st-key-{nanpin_key} [data-testid="stLinkButton"] a:hover,
         .st-key-{salt_key} [data-testid="stLinkButton"] a:hover {{ border-color:#2563EB; }}
-        .st-key-{nanpin_key} [data-testid="stPageLink"] a > div,
-        .st-key-{salt_key} [data-testid="stPageLink"] a > div,
-        .st-key-{nanpin_key} [data-testid="stLinkButton"] a > div,
-        .st-key-{salt_key} [data-testid="stLinkButton"] a > div {{ opacity:0; }}
+        .st-key-{nanpin_key} [data-testid="stPageLink"] a [data-testid="stMarkdownContainer"],
+        .st-key-{salt_key} [data-testid="stPageLink"] a [data-testid="stMarkdownContainer"],
+        .st-key-{nanpin_key} [data-testid="stLinkButton"] a [data-testid="stMarkdownContainer"],
+        .st-key-{salt_key} [data-testid="stLinkButton"] a [data-testid="stMarkdownContainer"] {{
+            display:none !important;
+        }}
         @media (max-width:768px) {{
             .st-key-{grid_key} {{ width:70%; margin:1rem auto 1.4rem; }}
             .st-key-{grid_key} [data-testid="stHorizontalBlock"] {{
