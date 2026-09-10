@@ -1,0 +1,45 @@
+name: Daily saved market prices
+on:
+  schedule:
+    # 16:05 Japan time, weekdays. GitHub may delay scheduled jobs.
+    - cron: '5 7 * * 1-5'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['scripts/update_market_data.py', '.github/workflows/market-data.yml']
+permissions:
+  contents: write
+concurrency:
+  group: daily-market-data
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: app
+      - uses: actions/checkout@v4
+        with:
+          ref: market-data
+          path: data
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install 'pandas>=2.2,<3' 'yfinance>=0.2.54,<1'
+      - name: Collect and validate full histories
+        run: python -u app/scripts/update_market_data.py --output data --workers 2
+      - name: Publish only successful snapshots
+        working-directory: data
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add prices manifest.json nikkei225.zip
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update saved daily market prices'
+            python ../app/scripts/write_snapshot_pointer.py --data .
+            git add latest.json
+            git commit -m 'Point readers at validated snapshot'
+            git push origin HEAD:market-data
+          fi

@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
+import market_store
 
 # Use an app-owned writable location for yfinance's timezone and cookie caches.
 yf.set_tz_cache_location(str(Path(__file__).with_name(".yfinance-cache")))
@@ -213,21 +214,45 @@ def find_light_pickling_price(
     return best_price, best_days
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def saved_snapshot():
+    return market_store.get_snapshot()
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
+def saved_price_frame(revision, ticker, entry):
+    return market_store.read_prices(revision, ticker, {"prices": {ticker: entry}})
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def saved_ranking_frame(revision, ranking):
+    return market_store.read_nikkei(revision, {"ranking": ranking})
+
+
+def show_saved_data_status(entry):
+    as_of = entry.get("latest_date", entry.get("as_of", "不明"))
+    fetched = datetime.fromisoformat(entry["fetched_at"]).astimezone(JAPAN_TIMEZONE)
+    st.caption(f"保存株価の最終取引日：{as_of} ／ 取得日時：{fetched:%Y/%m/%d %H:%M}（日本時間）")
+    st.caption("平日16時以降に日次更新します。更新に失敗した日は前回の保存データを表示します。リアルタイム株価ではありません。")
+    if date.fromisoformat(as_of) < latest_ranking_refresh_date():
+        st.info("前回の保存株価を表示しています（休場日・更新待ち・取得失敗の場合を含みます）。")
+
+
 def download_prices(ticker: str, start: date, end: date) -> pd.DataFrame:
-    # yfinance's end is exclusive.
-    raw = yf.download(ticker, start=start, end=end + pd.Timedelta(days=1), progress=False, auto_adjust=False)
-    if raw.empty:
-        raise RuntimeError("株価データを取得できませんでした。")
-    return normalize_prices(raw)
+    revision, manifest = saved_snapshot()
+    entry = manifest["prices"].get(ticker)
+    if entry is None:
+        raise RuntimeError("この銘柄の保存データはまだ取得できていません。次回の更新をお待ちください。")
+    prices = saved_price_frame(revision, ticker, entry)
+    prices = prices.loc[pd.Timestamp(start):pd.Timestamp(end)]
+    if prices.empty:
+        raise RuntimeError("指定期間の保存株価データがありません。")
+    return prices
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_current_price(ticker: str) -> float:
-    raw = yf.download(
-        ticker, period="5d", progress=False, auto_adjust=False
-    )
-    prices = normalize_prices(raw)
+    prices = download_prices(ticker, date(2000, 1, 1), date.today())
     if prices.empty or "Close" not in prices.columns:
         raise RuntimeError("現在の株価を取得できませんでした。")
     closes = prices["Close"].dropna()
@@ -248,10 +273,9 @@ def get_latest_close(prices: pd.DataFrame) -> float:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_company_info(ticker: str) -> dict:
-    try:
-        return yf.Ticker(ticker).get_info() or {}
-    except Exception:
-        return {}
+    # Optional metadata must not block price analysis when the provider is limited.
+    _, manifest = saved_snapshot()
+    return manifest["prices"].get(ticker, {}).get("company_info", {})
 
 
 def get_company_name(ticker: str, info: dict) -> str:
@@ -346,19 +370,13 @@ def load_company_options() -> list[str]:
 
 
 def calculate_light_pickling_rankings(
-    start_date: date, end_date: date
+    start_date: date, end_date: date, *, revision=None, manifest=None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     tickers = [f"{code}.T" for code in NIKKEI225_CODES]
-    raw = yf.download(
-        tickers,
-        start=start_date,
-        end=end_date + pd.Timedelta(days=1),
-        progress=False,
-        auto_adjust=False,
-        group_by="ticker",
-        # Avoid SQLite initialization/write contention on a fresh deployment.
-        threads=False,
-    )
+    if revision is None:
+        revision, manifest = saved_snapshot()
+    raw = saved_ranking_frame(revision, manifest["ranking"])
+    raw = raw.loc[pd.Timestamp(start_date):pd.Timestamp(end_date)]
     company_names = {
         option.split("｜", 1)[0]: option.split("｜", 1)[1]
         for option in load_company_options()
@@ -497,9 +515,12 @@ def get_light_pickling_ranking(
     start_date: date, requested_end_date: date
 ) -> tuple[pd.DataFrame, pd.DataFrame, date, bool]:
     """Refresh once after 16:00 JST on weekdays and reuse the saved ranking."""
-    refresh_date = latest_ranking_refresh_date()
+    revision, manifest = saved_snapshot()
+    if not manifest.get("ranking"):
+        raise RuntimeError("ランキング用データの初回更新がまだ完了していません。")
+    refresh_date = date.fromisoformat(manifest["ranking"]["as_of"])
     effective_end_date = min(requested_end_date, refresh_date)
-    cache_key = f"v5:{start_date.isoformat()}:{effective_end_date.isoformat()}"
+    cache_key = f"snapshot-v1:{revision}:{start_date.isoformat()}:{effective_end_date.isoformat()}"
     state = ranking_cache_state()
 
     with state["lock"]:
@@ -523,7 +544,7 @@ def get_light_pickling_ranking(
             return duration_ranking, lowest_price_ranking, refresh_date, False
 
         duration_ranking, lowest_price_ranking = calculate_light_pickling_rankings(
-            start_date, effective_end_date
+            start_date, effective_end_date, revision=revision, manifest=manifest
         )
         if duration_ranking.empty and lowest_price_ranking.empty:
             raise RuntimeError(
@@ -1418,6 +1439,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
                 unsafe_allow_html=True,
             )
             st.subheader("浅漬けランキング")
+            show_saved_data_status(saved_snapshot()[1]["ranking"])
             st.markdown(
                 '<div style="color:#111111; font-size:0.875rem; margin-bottom:0.75rem;">'
                 "現在の株価で購入した場合、<br>"
@@ -1497,7 +1519,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
                     )
                 st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
                 st.caption(
-                    f"更新基準：{format_date_ja(ranking_refresh_date)} 16:00"
+                    f"株価データ基準日：{format_date_ja(ranking_refresh_date)}"
                     + ("（更新済み）" if ranking_was_refreshed else "（保存済み）")
                 )
             scroll_to_result("ranking-results-anchor")
@@ -1533,6 +1555,7 @@ if run:
         with st.spinner("株価データを準備しています…"):
             ticker = security_code if "." in security_code else f"{security_code}.T"
             prices = download_prices(ticker, start_date, end_date)
+            end_date = min(end_date, prices.index[-1].date())
             light_pickling_days = None
             current_market_price = None
             if light_pickling_price:
@@ -1552,12 +1575,13 @@ if run:
             unsafe_allow_html=True,
         )
         streaks = find_streaks(prices, column, threshold)
+        show_saved_data_status(saved_snapshot()[1]["prices"][ticker])
         if light_pickling_price:
             st.info(
                 f"浅漬け株価：{threshold:,.0f}円（最長{light_pickling_days}日）を基準にしています。"
             )
         elif use_current_price:
-            st.info(f"現在の株価（直近取引日の終値）：{threshold:,.0f}円を基準にしています。")
+            st.info(f"保存データの終値（{end_date:%Y/%m/%d}）：{threshold:,.0f}円を基準にしています。")
         if light_pickling_price:
             price_difference = current_market_price - threshold
             difference_percent = (
