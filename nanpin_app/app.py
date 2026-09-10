@@ -408,7 +408,7 @@ def render_app_banners(
     for image_path, destination, label in banner_items:
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
         cards.append(
-            f'<a class="app-banner" href="{destination}" target="_self" '
+            f'<a class="app-banner" href="{destination}" target="_top" '
             f'aria-label="{label}"><img src="data:image/png;base64,{encoded}" '
             f'alt="{label}"></a>'
         )
