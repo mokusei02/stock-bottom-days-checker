@@ -400,32 +400,85 @@ def render_app_banners(
     if start_year is None:
         start_year = int(st.session_state.get(f"{key_prefix}_start_year_v2", 2015))
     reference_years = min(20, max(1, date.today().year - int(start_year)))
+    nanpin_query = {}
+    salt_query = {}
     if carry_conditions:
-        common = f"app_code={escape(security_code, quote=True)}"
-        nanpin_destination = f"/nanpin?{common}&amp;app_reference_years={reference_years}"
-        salt_destination = (
-            f"/?{common}&amp;app_threshold={threshold}&amp;app_current={int(use_current)}"
-            f"&amp;app_shallow={int(use_shallow)}&amp;app_start_year={int(start_year)}"
-        )
-    else:
-        nanpin_destination = "/nanpin"
-        salt_destination = "/"
-    banner_items = [
-        (assets / "absolute-safe-nanpin-banner.png", nanpin_destination, "絶対安全ナンピン君"),
-        (assets / "stock-bottom-days-banner.png", salt_destination, "塩漬け日数チェッカー"),
-    ]
-    cards = []
-    for image_path, destination, label in banner_items:
-        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
-        cards.append(
-            f'<a class="app-banner" href="{destination}" target="_top" '
-            f'aria-label="{label}"><img src="data:image/png;base64,{encoded}" '
-            f'alt="{label}"></a>'
-        )
+        nanpin_query = {
+            "app_code": security_code,
+            "app_reference_years": reference_years,
+        }
+        salt_query = {
+            "app_code": security_code,
+            "app_threshold": threshold,
+            "app_current": int(use_current),
+            "app_shallow": int(use_shallow),
+            "app_start_year": int(start_year),
+        }
+
+    render_index = getattr(render_app_banners, "_render_index", 0)
+    render_app_banners._render_index = render_index + 1
+    grid_key = f"app_banner_grid_{render_index}"
+    nanpin_key = f"app_banner_nanpin_{render_index}"
+    salt_key = f"app_banner_salt_{render_index}"
+    nanpin_image = base64.b64encode(
+        (assets / "absolute-safe-nanpin-banner.png").read_bytes()
+    ).decode("ascii")
+    salt_image = base64.b64encode(
+        (assets / "stock-bottom-days-banner.png").read_bytes()
+    ).decode("ascii")
     st.markdown(
-        '<div class="app-banner-grid">' + "".join(cards) + "</div>",
+        f"""
+        <style>
+        .st-key-{grid_key} {{ width:70%; max-width:602px; margin:1.4rem 0; }}
+        .st-key-{grid_key} [data-testid="stHorizontalBlock"] {{ gap:1rem; }}
+        .st-key-{nanpin_key} [data-testid="stPageLink"] a,
+        .st-key-{salt_key} [data-testid="stPageLink"] a {{
+            height:63px; padding:0; overflow:hidden; background:#fff center/contain no-repeat;
+            border:2px solid #AEB5BF; border-radius:.65rem; box-sizing:border-box;
+        }}
+        .st-key-{nanpin_key} [data-testid="stPageLink"] a {{
+            background-image:url("data:image/png;base64,{nanpin_image}");
+        }}
+        .st-key-{salt_key} [data-testid="stPageLink"] a {{
+            background-image:url("data:image/png;base64,{salt_image}");
+        }}
+        .st-key-{nanpin_key} [data-testid="stPageLink"] a:hover,
+        .st-key-{salt_key} [data-testid="stPageLink"] a:hover {{ border-color:#2563EB; }}
+        .st-key-{nanpin_key} [data-testid="stPageLink"] a > div,
+        .st-key-{salt_key} [data-testid="stPageLink"] a > div {{ opacity:0; }}
+        @media (max-width:768px) {{
+            .st-key-{grid_key} {{ width:70%; margin:1rem auto 1.4rem; }}
+            .st-key-{grid_key} [data-testid="stHorizontalBlock"] {{
+                flex-direction:column !important; gap:.7rem;
+            }}
+            .st-key-{grid_key} [data-testid="stColumn"] {{
+                width:100% !important; flex:0 0 auto !important;
+            }}
+            .st-key-{nanpin_key} [data-testid="stPageLink"] a,
+            .st-key-{salt_key} [data-testid="stPageLink"] a {{ height:53px; }}
+        }}
+        </style>
+        """,
         unsafe_allow_html=True,
     )
+    with st.container(key=grid_key):
+        nanpin_column, salt_column = st.columns(2)
+        with nanpin_column:
+            with st.container(key=nanpin_key):
+                st.page_link(
+                    "pages/nanpin.py",
+                    label="絶対安全ナンピン君",
+                    query_params=nanpin_query,
+                    width="stretch",
+                )
+        with salt_column:
+            with st.container(key=salt_key):
+                st.page_link(
+                    "app.py",
+                    label="塩漬け日数チェッカー",
+                    query_params=salt_query,
+                    width="stretch",
+                )
 
 
 @st.cache_data
