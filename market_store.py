@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import zipfile
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 import pandas as pd
@@ -12,6 +14,8 @@ import pandas as pd
 REPOSITORY = "mokusei02/stock-bottom-days-checker"
 BRANCH = "market-data"
 _last_snapshot = None
+_local_snapshot_setting = os.getenv("MARKET_STORE_LOCAL_DIR")
+LOCAL_SNAPSHOT_DIR = Path(_local_snapshot_setting) if _local_snapshot_setting else None
 
 
 def read_url(url: str) -> bytes:
@@ -38,8 +42,16 @@ def get_snapshot() -> tuple[str, dict]:
             raise ValueError("Empty market snapshot")
         _last_snapshot = (revision, manifest)
     except Exception as error:
-        if _last_snapshot is None:
-            raise RuntimeError("保存株価データを読み込めませんでした。時間をおいてお試しください。") from error
+        try:
+            if LOCAL_SNAPSHOT_DIR is None:
+                raise FileNotFoundError("Local snapshot is disabled")
+            pointer = json.loads((LOCAL_SNAPSHOT_DIR / "latest.json").read_text(encoding="utf-8"))
+            revision = pointer["revision"]
+            manifest = json.loads((LOCAL_SNAPSHOT_DIR / "manifest.json").read_text(encoding="utf-8"))
+            _last_snapshot = (revision, manifest)
+        except (OSError, ValueError, KeyError, TypeError):
+            if _last_snapshot is None:
+                raise RuntimeError("保存株価データを読み込めませんでした。時間をおいてお試しください。") from error
     return _last_snapshot
 
 
@@ -62,7 +74,12 @@ def read_prices(revision: str, ticker: str, manifest: dict) -> pd.DataFrame:
     try:
         return parse_prices(read_url(raw_url(revision, entry["path"])))
     except (OSError, ValueError) as error:
-        raise RuntimeError("保存株価データの読み込みに失敗しました。時間をおいてお試しください。") from error
+        try:
+            if LOCAL_SNAPSHOT_DIR is None:
+                raise FileNotFoundError("Local snapshot is disabled")
+            return parse_prices((LOCAL_SNAPSHOT_DIR / entry["path"]).read_bytes())
+        except (OSError, ValueError, KeyError) as local_error:
+            raise RuntimeError("保存株価データの読み込みに失敗しました。時間をおいてお試しください。") from local_error
 
 
 def read_nikkei(revision: str, manifest: dict) -> pd.DataFrame:
@@ -73,7 +90,13 @@ def read_nikkei(revision: str, manifest: dict) -> pd.DataFrame:
         with zipfile.ZipFile(io.BytesIO(read_url(raw_url(revision, entry["path"])))) as archive:
             frames = {name.removesuffix(".csv"): parse_prices(archive.read(name)) for name in archive.namelist()}
     except (OSError, ValueError, zipfile.BadZipFile) as error:
-        raise RuntimeError("保存ランキングデータの読み込みに失敗しました。時間をおいてお試しください。") from error
+        try:
+            if LOCAL_SNAPSHOT_DIR is None:
+                raise FileNotFoundError("Local snapshot is disabled")
+            with zipfile.ZipFile(LOCAL_SNAPSHOT_DIR / entry["path"]) as archive:
+                frames = {name.removesuffix(".csv"): parse_prices(archive.read(name)) for name in archive.namelist()}
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as local_error:
+            raise RuntimeError("保存ランキングデータの読み込みに失敗しました。時間をおいてお試しください。") from local_error
     if set(frames) != set(entry["tickers"]):
         raise RuntimeError("ランキング用データが不完全です。")
     return pd.concat(frames, axis=1)

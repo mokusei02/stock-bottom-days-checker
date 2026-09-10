@@ -361,6 +361,41 @@ def render_company_info(company_name: str, ticker: str, info: dict) -> None:
         st.caption(f"{ticker} の企業情報を取得できませんでした。")
 
 
+def render_app_banners(
+    security_code: str, key_prefix: str = "desktop", start_year: int | None = None
+) -> None:
+    """Show equal-size links to both stock tools and carry the company code."""
+    assets = Path(__file__).with_name("assets")
+    threshold = int(st.session_state.get(f"{key_prefix}_threshold", 320))
+    use_current = bool(st.session_state.get(f"{key_prefix}_use_current_price", True))
+    use_shallow = bool(st.session_state.get(f"{key_prefix}_light_pickling_price", False))
+    if start_year is None:
+        start_year = int(st.session_state.get(f"{key_prefix}_start_year_v2", 2015))
+    reference_years = min(20, max(1, date.today().year - int(start_year)))
+    common = f"app_code={escape(security_code, quote=True)}"
+    nanpin_query = f"?{common}&amp;app_reference_years={reference_years}"
+    salt_query = (
+        f"?{common}&amp;app_threshold={threshold}&amp;app_current={int(use_current)}"
+        f"&amp;app_shallow={int(use_shallow)}&amp;app_start_year={int(start_year)}"
+    )
+    banner_items = [
+        (assets / "absolute-safe-nanpin-banner.png", f"http://127.0.0.1:8769/{nanpin_query}", "絶対安全ナンピン君"),
+        (assets / "stock-bottom-days-banner.png", f"/{salt_query}", "塩漬け日数チェッカー"),
+    ]
+    cards = []
+    for image_path, destination, label in banner_items:
+        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        cards.append(
+            f'<a class="app-banner" href="{destination}" target="_self" '
+            f'aria-label="{label}"><img src="data:image/png;base64,{encoded}" '
+            f'alt="{label}"></a>'
+        )
+    st.markdown(
+        '<div class="app-banner-grid">' + "".join(cards) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 @st.cache_data
 def load_company_options() -> list[str]:
     companies = pd.read_csv(
@@ -873,6 +908,41 @@ if ranking_code:
     del st.query_params["ranking_code"]
     if "ranking_start" in st.query_params:
         del st.query_params["ranking_start"]
+
+# バナーから移動した場合は、同じ企業をこのアプリの初期設定で自動集計する。
+linked_company_code = str(st.query_params.get("app_code", "")).strip().upper()
+if linked_company_code:
+    linked_company = next(
+        (
+            option
+            for option in load_company_options()
+            if option.split("｜", 1)[0].strip().upper() == linked_company_code
+        ),
+        None,
+    )
+    if linked_company:
+        def linked_int(name: str, default: int) -> int:
+            try:
+                return int(float(st.query_params.get(name, default)))
+            except (TypeError, ValueError):
+                return default
+
+        threshold = max(0, linked_int("app_threshold", 320))
+        use_current = bool(linked_int("app_current", 1))
+        use_shallow = bool(linked_int("app_shallow", 0))
+        requested_start_year = linked_int("app_start_year", 2015)
+        start_year = min(START_YEAR_OPTIONS, key=lambda year: abs(year - requested_start_year))
+        for prefix in ("mobile", "desktop"):
+            st.session_state[f"{prefix}_company"] = linked_company
+            st.session_state[f"{prefix}_threshold"] = threshold
+            st.session_state[f"{prefix}_use_current_price"] = use_current
+            st.session_state[f"{prefix}_light_pickling_price"] = use_shallow
+            st.session_state[f"{prefix}_start_year_v2"] = start_year
+        st.session_state["ranking_company_run"] = True
+    del st.query_params["app_code"]
+    for linked_param in ("app_threshold", "app_current", "app_shallow", "app_start_year"):
+        if linked_param in st.query_params:
+            del st.query_params[linked_param]
 components.html(
     """
     <script>
@@ -1093,6 +1163,32 @@ st.markdown(
         font-weight: 400;
         line-height: 1.25;
     }
+    .app-banner-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+        margin: 1.4rem 0;
+        max-width: 860px;
+    }
+    .app-banner {
+        display: flex;
+        height: 90px;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        background: #FFFFFF;
+        border: 2px solid #AEB5BF;
+        border-radius: 0.65rem;
+        box-sizing: border-box;
+    }
+    .app-banner:hover { border-color: #2563EB; }
+    .app-banner img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+    }
+    .st-key-desktop_initial_banners { margin-top: 36vh; }
     .app-title {
         display: flex;
         align-items: center;
@@ -1138,6 +1234,13 @@ st.markdown(
         backdrop-filter: blur(8px);
     }
     @media (max-width: 768px) {
+        .app-banner-grid {
+            grid-template-columns: 1fr;
+            gap: 0.7rem;
+            margin: 1rem 0 1.4rem;
+        }
+        .app-banner { height: 76px; }
+        .st-key-desktop_initial_banners { display: none; }
         .stAppViewBlockContainer,
         .stMainBlockContainer,
         [data-testid="stAppViewBlockContainer"] {
@@ -1482,6 +1585,11 @@ if mobile_ranking_requested or desktop_ranking_requested:
                     f"更新基準：{format_date_ja(ranking_refresh_date)} 16:00"
                     + ("（更新済み）" if ranking_was_refreshed else "（保存済み）")
                 )
+            render_app_banners(
+                ranking_values[0],
+                "mobile" if mobile_ranking_requested else "desktop",
+                ranking_values[4].year,
+            )
             scroll_to_result("ranking-results-anchor")
         except (RuntimeError, ValueError, KeyError) as error:
             st.error(f"ランキングを作成できませんでした: {error}")
@@ -1489,6 +1597,10 @@ if mobile_ranking_requested or desktop_ranking_requested:
 
 with st.container(key="mobile_search_history"):
     render_search_history("mobile")
+    render_app_banners(mobile_values[0], "mobile", mobile_values[4].year)
+if not mobile_values[-1] and not desktop_values[-1]:
+    with st.container(key="desktop_initial_banners"):
+        render_app_banners(desktop_values[0], "desktop", desktop_values[4].year)
 st.markdown(
     '<div class="app-footer">制作者：木星在住　'
     '<a href="https://x.com/mokuseidayo" target="_blank">Twitter</a></div>',
@@ -1497,8 +1609,10 @@ st.markdown(
 
 if mobile_values[-1]:
     security_code, threshold, use_current_price, light_pickling_price, start_date, end_date, run = mobile_values
+    active_search_prefix = "mobile"
 else:
     security_code, threshold, use_current_price, light_pickling_price, start_date, end_date, run = desktop_values
+    active_search_prefix = "desktop"
 if use_current_price:
     light_pickling_price = False
 label = "安値"
@@ -1687,6 +1801,7 @@ if run:
                 render_results_table(styled_mobile, table_height)
             csv = display_streaks.to_csv(index=False).encode("utf-8-sig")
             st.download_button("結果をCSVで保存", csv, "nissan_price_streaks.csv", "text/csv")
+            render_app_banners(security_code, active_search_prefix, start_date.year)
 
         chart = prices[[column]].dropna().reset_index()
         chart.columns = ["日付", "株価"]
