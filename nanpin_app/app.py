@@ -8,11 +8,13 @@ import re
 from datetime import date
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
+from urllib.parse import urlencode
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 import yfinance as yf
 from nanpin_plan import build_nanpin_plan
 
@@ -424,26 +426,39 @@ def render_app_banners(
     salt_image = base64.b64encode(
         (assets / "stock-bottom-days-banner.png").read_bytes()
     ).decode("ascii")
+    run_context = get_script_run_ctx()
+    standalone_nanpin = bool(
+        run_context
+        and Path(run_context.main_script_path).resolve() == Path(__file__).resolve()
+    )
     st.markdown(
         f"""
         <style>
         .st-key-{grid_key} {{ width:70%; max-width:602px; margin:1.4rem 0 1.8rem; }}
         .st-key-{grid_key} [data-testid="stHorizontalBlock"] {{ gap:1rem; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a,
-        .st-key-{salt_key} [data-testid="stPageLink"] a {{
+        .st-key-{salt_key} [data-testid="stPageLink"] a,
+        .st-key-{nanpin_key} [data-testid="stLinkButton"] a,
+        .st-key-{salt_key} [data-testid="stLinkButton"] a {{
             height:66px; padding:0; overflow:hidden; background:#fff center/contain no-repeat;
             border:2px solid #AEB5BF; border-radius:.65rem; box-sizing:border-box;
         }}
-        .st-key-{nanpin_key} [data-testid="stPageLink"] a {{
+        .st-key-{nanpin_key} [data-testid="stPageLink"] a,
+        .st-key-{nanpin_key} [data-testid="stLinkButton"] a {{
             background-image:url("data:image/png;base64,{nanpin_image}");
         }}
-        .st-key-{salt_key} [data-testid="stPageLink"] a {{
+        .st-key-{salt_key} [data-testid="stPageLink"] a,
+        .st-key-{salt_key} [data-testid="stLinkButton"] a {{
             background-image:url("data:image/png;base64,{salt_image}");
         }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a:hover,
-        .st-key-{salt_key} [data-testid="stPageLink"] a:hover {{ border-color:#2563EB; }}
+        .st-key-{salt_key} [data-testid="stPageLink"] a:hover,
+        .st-key-{nanpin_key} [data-testid="stLinkButton"] a:hover,
+        .st-key-{salt_key} [data-testid="stLinkButton"] a:hover {{ border-color:#2563EB; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a > div,
-        .st-key-{salt_key} [data-testid="stPageLink"] a > div {{ opacity:0; }}
+        .st-key-{salt_key} [data-testid="stPageLink"] a > div,
+        .st-key-{nanpin_key} [data-testid="stLinkButton"] a > div,
+        .st-key-{salt_key} [data-testid="stLinkButton"] a > div {{ opacity:0; }}
         @media (max-width:768px) {{
             .st-key-{grid_key} {{ width:70%; margin:1rem auto 1.4rem; }}
             .st-key-{grid_key} [data-testid="stHorizontalBlock"] {{
@@ -453,7 +468,9 @@ def render_app_banners(
                 width:100% !important; flex:0 0 auto !important;
             }}
             .st-key-{nanpin_key} [data-testid="stPageLink"] a,
-            .st-key-{salt_key} [data-testid="stPageLink"] a {{ height:53px; }}
+            .st-key-{salt_key} [data-testid="stPageLink"] a,
+            .st-key-{nanpin_key} [data-testid="stLinkButton"] a,
+            .st-key-{salt_key} [data-testid="stLinkButton"] a {{ height:53px; }}
         }}
         </style>
         """,
@@ -463,20 +480,38 @@ def render_app_banners(
         nanpin_column, salt_column = st.columns(2)
         with nanpin_column:
             with st.container(key=nanpin_key):
-                st.page_link(
-                    "pages/nanpin.py",
-                    label="絶対安全ナンピン君",
-                    query_params=nanpin_query,
-                    width="stretch",
-                )
+                if standalone_nanpin:
+                    nanpin_url = (
+                        "https://stock-bottom-days-checker-jmmq6nsrbctl7h9udblgpx."
+                        "streamlit.app/nanpin"
+                    )
+                    if nanpin_query:
+                        nanpin_url += "?" + urlencode(nanpin_query)
+                    st.link_button("絶対安全ナンピン君", nanpin_url, width="stretch")
+                else:
+                    st.page_link(
+                        "pages/nanpin.py",
+                        label="絶対安全ナンピン君",
+                        query_params=nanpin_query,
+                        width="stretch",
+                    )
         with salt_column:
             with st.container(key=salt_key):
-                st.page_link(
-                    "app.py",
-                    label="塩漬け日数チェッカー",
-                    query_params=salt_query,
-                    width="stretch",
-                )
+                if standalone_nanpin:
+                    salt_url = (
+                        "https://stock-bottom-days-checker-jmmq6nsrbctl7h9udblgpx."
+                        "streamlit.app/"
+                    )
+                    if salt_query:
+                        salt_url += "?" + urlencode(salt_query)
+                    st.link_button("塩漬け日数チェッカー", salt_url, width="stretch")
+                else:
+                    st.page_link(
+                        "app.py",
+                        label="塩漬け日数チェッカー",
+                        query_params=salt_query,
+                        width="stretch",
+                    )
 
 
 def render_bottom_price_form(threshold: float) -> None:
