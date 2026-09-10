@@ -927,6 +927,7 @@ st.markdown(
     .st-key-mobile_ranking_controls { display: none; }
     .st-key-mobile_results_table { display: none; }
     .st-key-mobile_search_history { display: none; }
+    .st-key-mobile_full_period_graph { display: none; }
     .st-key-nanpin_indicator_card {
         margin: 36px 16px 0;
     }
@@ -1244,6 +1245,8 @@ st.markdown(
         }
         .st-key-mobile_filters { display: block; }
         .st-key-mobile_ranking_controls { display: block; }
+        .st-key-mobile_full_period_graph { display: block; }
+        .st-key-desktop_full_period_graph { display: none; }
         .mobile-ranking-note {
             margin: 0.45rem 0 0.9rem;
             color: #111111;
@@ -2375,24 +2378,72 @@ if run:
             y="株価:Q",
             text="注記:N",
         )
+        full_period_title = (
+            '<div class="full-period-title" style="font-size:20px;font-weight:700;">'
+            f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
+            "</div>"
+        )
+        full_period_chart = (
+            year_lines
+            + normal_line
+            + above_initial_average_line
+            + nanpin_price_lines
+            + nanpin_price_label_backgrounds
+            + nanpin_price_labels
+        ).properties(height=640)
+        mobile_base = base.encode(
+            x=alt.X(
+                "日付:T",
+                title=None,
+                axis=alt.Axis(
+                    format="%y年",
+                    tickCount="year",
+                    labelAngle=0,
+                    labelOverlap=False,
+                    labelFontSize=9,
+                ),
+                scale=alt.Scale(
+                    domain=[pd.Timestamp(start_date), pd.Timestamp(end_date)]
+                ),
+            )
+        )
+        mobile_normal_line = mobile_base.mark_line(color="#2563EB", strokeWidth=2)
+        mobile_above_initial_average_line = alt.Chart(above_price_points).mark_line(
+            color="#E67E22", strokeWidth=2, strokeCap="butt"
+        ).encode(
+            x=alt.X(
+                "日付:T",
+                title=None,
+                axis=alt.Axis(
+                    format="%y年",
+                    tickCount="year",
+                    labelAngle=0,
+                    labelOverlap=False,
+                    labelFontSize=9,
+                ),
+                scale=alt.Scale(
+                    domain=[pd.Timestamp(start_date), pd.Timestamp(end_date)]
+                ),
+            ),
+            y=alt.Y(
+                "株価:Q",
+                title=f"{label}（円）",
+                scale=alt.Scale(zero=False),
+            ),
+            detail="オレンジ区間:N",
+        )
+        mobile_full_period_chart = (
+            year_lines
+            + mobile_normal_line
+            + mobile_above_initial_average_line
+            + nanpin_price_lines
+            + nanpin_price_label_backgrounds
+            + nanpin_price_labels
+        ).properties(height=320)
         with full_graph_slot.container():
-            st.markdown(
-                '<div style="font-size:20px;font-weight:700;">'
-                f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
-                "</div>",
-                unsafe_allow_html=True,
-            )
-            st.altair_chart(
-                (
-                    year_lines
-                    + normal_line
-                    + above_initial_average_line
-                    + nanpin_price_lines
-                    + nanpin_price_label_backgrounds
-                    + nanpin_price_labels
-                ).properties(height=640),
-                use_container_width=True,
-            )
+            with st.container(key="desktop_full_period_graph"):
+                st.markdown(full_period_title, unsafe_allow_html=True)
+                st.altair_chart(full_period_chart, use_container_width=True)
         full_statistics_period = (
             f"{format_month_ja(start_date)}～{format_month_ja(end_date)}"
         )
@@ -2535,13 +2586,15 @@ if run:
             stage_label = "初回投資" if step == 0 else f"第{step}ナンピン"
             if step == 0:
                 nanpin_review_lines.append(
-                    '<div style="margin-bottom:12px;">現在株価'
+                    '<div style="margin-bottom:12px;">'
+                    f"{escape(company_name)}の現在株価"
                     f"{format_yen(investment_price)}に"
                     f'<span style="color:#2563EB;">'
                     f"{format_man_yen(investment_amount)}</span>投資した場合…</div>"
                 )
                 nanpin_mobile_review_lines.append(
-                    '<div class="nanpin-review-section">現在株価'
+                    '<div class="nanpin-review-section">'
+                    f"{escape(company_name)}の現在株価"
                     f"{format_yen(investment_price)}に<br>"
                     f'<span style="color:#2563EB;">'
                     f"{format_man_yen(investment_amount)}</span>投資した場合…</div>"
@@ -2695,7 +2748,7 @@ if run:
             with recent_chart_column:
                 st.markdown(
                     '<div style="font-size:20px;font-weight:700;margin-left:48px;">'
-                    "直近1年</div>",
+                    f"直近1年　【{escape(company_name)}】</div>",
                     unsafe_allow_html=True,
                 )
                 st.altair_chart(
@@ -2709,6 +2762,9 @@ if run:
                     ).properties(height=320),
                     use_container_width=True,
                 )
+                with st.container(key="mobile_full_period_graph"):
+                    st.markdown(full_period_title, unsafe_allow_html=True)
+                    st.altair_chart(mobile_full_period_chart, use_container_width=True)
             with review_column:
                 with st.container(key="nanpin_indicator_card", border=True):
                     st.markdown(review_header_html, unsafe_allow_html=True)
