@@ -403,7 +403,7 @@ def render_app_banners(
         f"&amp;app_shallow={int(use_shallow)}&amp;app_start_year={int(start_year)}"
     )
     banner_items = [
-        (assets / "absolute-safe-nanpin-banner.png", f"http://127.0.0.1:8769/{nanpin_query}", "絶対安全ナンピン君"),
+        (assets / "absolute-safe-nanpin-banner.png", f"https://stock-bottom-days-checker-4sljbe7dngxk2s7epupscn.streamlit.app/{nanpin_query}", "絶対安全ナンピン君"),
         (assets / "stock-bottom-days-banner.png", f"/{salt_query}", "塩漬け日数チェッカー"),
     ]
     cards = []
