@@ -384,7 +384,11 @@ def render_company_info(company_name: str, ticker: str, info: dict) -> None:
 
 
 def render_app_banners(
-    security_code: str, key_prefix: str = "desktop", start_year: int | None = None
+    security_code: str,
+    key_prefix: str = "desktop",
+    start_year: int | None = None,
+    *,
+    carry_conditions: bool = True,
 ) -> None:
     """Show equal-size, clickable links to both stock tools."""
     assets = Path(__file__).with_name("assets")
@@ -394,15 +398,19 @@ def render_app_banners(
     gap = int(st.session_state.get(f"{key_prefix}_maximum_bottom_gap_percent", 10))
     if start_year is None:
         start_year = date.today().year - reference_years
-    common = f"app_code={escape(security_code, quote=True)}"
-    nanpin_query = (
-        f"?{common}&amp;app_budget={budget:g}&amp;app_count={count}"
-        f"&amp;app_reference_years={reference_years}&amp;app_gap={gap}"
-    )
-    salt_query = f"?{common}&amp;app_start_year={int(start_year)}"
+    if carry_conditions:
+        common = f"app_code={escape(security_code, quote=True)}"
+        nanpin_destination = (
+            f"/nanpin?{common}&amp;app_budget={budget:g}&amp;app_count={count}"
+            f"&amp;app_reference_years={reference_years}&amp;app_gap={gap}"
+        )
+        salt_destination = f"/?{common}&amp;app_start_year={int(start_year)}"
+    else:
+        nanpin_destination = "/nanpin"
+        salt_destination = "/"
     banner_items = [
-        (assets / "absolute-safe-nanpin-banner.png", f"/nanpin{nanpin_query}", "絶対安全ナンピン君"),
-        (assets / "stock-bottom-days-banner.png", f"/{salt_query}", "塩漬け日数チェッカー"),
+        (assets / "absolute-safe-nanpin-banner.png", nanpin_destination, "絶対安全ナンピン君"),
+        (assets / "stock-bottom-days-banner.png", salt_destination, "塩漬け日数チェッカー"),
     ]
     cards = []
     for image_path, destination, label in banner_items:
@@ -920,6 +928,50 @@ components.html(
     """,
     height=0,
 )
+components.html(
+    """
+    <script>
+    (() => {
+        const page = window.parent;
+        if (!['127.0.0.1', 'localhost'].includes(page.location.hostname)) return;
+        const controlId = 'local-view-switcher';
+        if (page.document.getElementById(controlId)) return;
+        const control = page.document.createElement('div');
+        control.id = controlId;
+        control.innerHTML = `
+            <span>表示確認（初期：PC版）</span>
+            <button type="button" data-width="1366" data-height="850" data-name="desktopPreview">PC版</button>
+            <button type="button" data-width="390" data-height="850" data-name="mobilePreview">スマホ版</button>
+        `;
+        Object.assign(control.style, {
+            position: 'fixed', right: '16px', bottom: '58px', zIndex: '1002',
+            display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 8px',
+            border: '1px solid #CBD5E1', borderRadius: '12px',
+            background: 'rgba(255,255,255,0.96)', boxShadow: '0 8px 24px rgba(15,23,42,0.14)',
+            color: '#334155', fontFamily: '"Yu Gothic", sans-serif', fontSize: '12px',
+            fontWeight: '700', backdropFilter: 'blur(8px)'
+        });
+        for (const button of control.querySelectorAll('button')) {
+            Object.assign(button.style, {
+                border: '0', borderRadius: '8px', padding: '7px 10px',
+                background: button.dataset.name === 'desktopPreview' ? '#0F766E' : '#334155',
+                color: '#FFFFFF', fontSize: '12px', fontWeight: '700', cursor: 'pointer'
+            });
+            button.addEventListener('click', () => {
+                const preview = page.open(
+                    page.location.href,
+                    button.dataset.name,
+                    `popup=yes,width=${button.dataset.width},height=${button.dataset.height},resizable=yes,scrollbars=yes`
+                );
+                if (preview) preview.focus();
+            });
+        }
+        page.document.body.appendChild(control);
+    })();
+    </script>
+    """,
+    height=0,
+)
 st.markdown(
     """
     <style>
@@ -929,6 +981,7 @@ st.markdown(
     .st-key-mobile_results_table { display: none; }
     .st-key-mobile_search_history { display: none; }
     .st-key-mobile_full_period_graph { display: none; }
+    .full-period-title .mobile-title-break { display: none; }
     .st-key-nanpin_indicator_card {
         margin: 36px 16px 0;
     }
@@ -1122,12 +1175,13 @@ st.markdown(
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 1rem;
-        max-width: 860px;
+        width: 70%;
+        max-width: 602px;
         margin: 1.4rem 0 1.8rem;
     }
     .app-banner {
         display: flex;
-        height: 94px;
+        height: 66px;
         align-items: center;
         justify-content: center;
         overflow: hidden;
@@ -1236,9 +1290,10 @@ st.markdown(
         .app-banner-grid {
             grid-template-columns: 1fr;
             gap: 0.7rem;
-            margin: 1rem 0 1.4rem;
+            width: 70%;
+            margin: 1rem auto 1.4rem;
         }
-        .app-banner { height: 76px; }
+        .app-banner { height: 53px; }
         .stAppViewBlockContainer,
         .stMainBlockContainer,
         [data-testid="stAppViewBlockContainer"] {
@@ -1248,6 +1303,12 @@ st.markdown(
         .st-key-mobile_ranking_controls { display: block; }
         .st-key-mobile_full_period_graph { display: block; }
         .st-key-desktop_full_period_graph { display: none; }
+        .full-period-title {
+            margin-bottom: 0.75rem;
+            font-size: 16px !important;
+            line-height: 1.45;
+        }
+        .full-period-title .mobile-title-break { display: block; }
         .mobile-ranking-note {
             margin: 0.45rem 0 0.9rem;
             color: #111111;
@@ -1505,6 +1566,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
                 ranking_values[0],
                 "mobile" if mobile_ranking_requested else "desktop",
                 ranking_values[4].year,
+                carry_conditions=False,
             )
             scroll_to_result("ranking-results-anchor")
         except (RuntimeError, ValueError, KeyError) as error:
@@ -1513,10 +1575,15 @@ if mobile_ranking_requested or desktop_ranking_requested:
 
 with st.container(key="mobile_search_history"):
     render_search_history("mobile")
-    render_app_banners(mobile_values[0], "mobile", mobile_values[4].year)
+    render_app_banners(
+        mobile_values[0], "mobile", mobile_values[4].year, carry_conditions=False
+    )
 if not mobile_values[-1] and not desktop_values[-1]:
     with st.container(key="desktop_initial_banners"):
-        render_app_banners(desktop_values[0], "desktop", desktop_values[4].year)
+        render_app_banners(
+            desktop_values[0], "desktop", desktop_values[4].year,
+            carry_conditions=False,
+        )
 st.markdown(
     '<div class="app-footer">制作者：木星在住　'
     '<a href="https://x.com/mokuseidayo" target="_blank">Twitter</a></div>',
@@ -2381,7 +2448,8 @@ if run:
         )
         full_period_title = (
             '<div class="full-period-title" style="font-size:20px;font-weight:700;">'
-            f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
+            f'期間：<span class="mobile-title-break"></span>'
+            f"{format_month_ja(start_date)}～{format_month_ja(end_date)}"
             "</div>"
         )
         full_period_chart = (
@@ -2589,16 +2657,16 @@ if run:
                 nanpin_review_lines.append(
                     '<div style="margin-bottom:12px;">'
                     f"{escape(company_name)}の現在株価"
-                    f"{format_yen(investment_price)}に"
+                    f"{format_yen(investment_price)}に<br>初回は"
                     f'<span style="color:#2563EB;">'
-                    f"{format_man_yen(investment_amount)}</span>投資した場合…</div>"
+                    f"{format_man_yen(investment_amount)}</span>投資し…</div>"
                 )
                 nanpin_mobile_review_lines.append(
                     '<div class="nanpin-review-section">'
                     f"{escape(company_name)}の現在株価"
-                    f"{format_yen(investment_price)}に<br>"
+                    f"{format_yen(investment_price)}に<br>初回は"
                     f'<span style="color:#2563EB;">'
-                    f"{format_man_yen(investment_amount)}</span>投資した場合…</div>"
+                    f"{format_man_yen(investment_amount)}</span>投資し…</div>"
                 )
                 continue
             average_gap = calculate_nanpin_gap_percent(
