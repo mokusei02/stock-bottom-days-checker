@@ -482,7 +482,7 @@ def render_app_banners(
             with st.container(key=nanpin_key):
                 if standalone_nanpin:
                     nanpin_url = (
-                        "https://stock-bottom-days-checker-fixed."
+                        "https://stock-bottom-days-checker-jmmq6nsrbctl7h9udblgpx."
                         "streamlit.app/nanpin"
                     )
                     if nanpin_query:
@@ -499,7 +499,7 @@ def render_app_banners(
             with st.container(key=salt_key):
                 if standalone_nanpin:
                     salt_url = (
-                        "https://stock-bottom-days-checker-fixed."
+                        "https://stock-bottom-days-checker-jmmq6nsrbctl7h9udblgpx."
                         "streamlit.app/"
                     )
                     if salt_query:
