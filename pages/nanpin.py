@@ -2,7 +2,12 @@ from pathlib import Path
 import sys
 
 
-nanpin_app_path = Path(__file__).resolve().parents[1] / "nanpin_app" / "app.py"
+repository_root = Path(__file__).resolve().parents[1]
+repository_root_directory = str(repository_root)
+if repository_root_directory not in sys.path:
+    sys.path.insert(0, repository_root_directory)
+
+nanpin_app_path = repository_root / "nanpin_app" / "app.py"
 nanpin_app_directory = str(nanpin_app_path.parent)
 if nanpin_app_directory not in sys.path:
     sys.path.insert(0, nanpin_app_directory)

@@ -5,7 +5,8 @@ from html import escape
 import json
 from math import pi
 import re
-from datetime import date
+import threading
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
 from urllib.parse import urlencode
@@ -16,6 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 import yfinance as yf
+import market_store
 from nanpin_plan import build_nanpin_plan
 
 # Keep this copy's Yahoo Finance cache independent of the original app.
@@ -26,6 +28,10 @@ LABELS = {"Close": "終値", "Low": "安値", "Open": "始値", "High": "高値"
 START_YEAR_OPTIONS = list(range(2000, 2030, 5))
 SEARCH_HISTORY_FILE = Path(__file__).with_name(".search_history.json")
 SEARCH_HISTORY_COOKIE = "stock_search_history_clone_8769"
+RANKING_CACHE_FILE = Path(__file__).with_name(".light_pickling_ranking_cache.json")
+JAPAN_TIMEZONE = timezone(timedelta(hours=9))
+RANKING_REFRESH_TIME = time(16, 0)
+RANKING_FIXED_START_DATE = date(2015, 1, 1)
 TABLE_HEADER_STYLES = [
     {
         "selector": "th",
@@ -89,46 +95,6 @@ def format_price_with_change(value, base_price: float) -> str:
     return f"{price}円（{sign}{change_text}％）"
 
 
-def format_ranking_lowest_for_responsive_display(value) -> str:
-    text = str(value)
-    match = re.fullmatch(r"(.+?円)（([+-]?\d+％)）", text)
-    if not match:
-        return escape(text)
-    return (
-        f'<span class="ranking-lowest-price">{escape(match.group(1))}</span>'
-        '<span class="ranking-lowest-paren">（</span>'
-        f'<span class="ranking-lowest-change">{escape(match.group(2))}</span>'
-        '<span class="ranking-lowest-paren">）</span>'
-    )
-
-
-def render_ranking_table(frame: pd.DataFrame, key: str, bold_longest=False) -> None:
-    display = frame.copy()
-    display["最安値"] = display["最安値"].map(
-        format_ranking_lowest_for_responsive_display
-    )
-    styles = pd.DataFrame(
-        "background-color: #FFFFFF;", index=display.index, columns=display.columns
-    )
-    if bold_longest and "最長塩漬け期間" in styles:
-        styles.loc[:, "最長塩漬け期間"] += " font-weight: 700;"
-    for row_index, lowest_value in display["最安値"].items():
-        percent_match = re.search(r"([+-]?\d+)％", str(lowest_value))
-        if percent_match:
-            change_percent = int(percent_match.group(1))
-            text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
-            styles.loc[row_index, "最安値"] += (
-                f" color: {text_color}; font-weight: 700;"
-            )
-    styled = display.style.apply(lambda _: styles, axis=None).set_table_styles(
-        TABLE_HEADER_STYLES
-    )
-    with st.container(key=key):
-        render_results_table(
-            styled, 38 * (len(display) + 1) + 4, limit_vertical_height=False
-        )
-
-
 def calculate_nanpin_gap_percent(
     average_price: float, investment_price: float
 ) -> int:
@@ -159,6 +125,48 @@ def format_yen(value: float) -> str:
 
 def format_man_yen(value_yen: float) -> str:
     return f"{value_yen / 10_000:,.1f}".rstrip("0").rstrip(".") + "万円"
+
+
+def format_ranking_lowest_for_responsive_display(value) -> str:
+    """Keep the ranking value inline on desktop and split it on mobile."""
+    text = str(value)
+    match = re.fullmatch(r"(.+?円)（([+-]?\d+％)）", text)
+    if not match:
+        return escape(text)
+    return (
+        f'<span class="ranking-lowest-price">{escape(match.group(1))}</span>'
+        '<span class="ranking-lowest-paren">（</span>'
+        f'<span class="ranking-lowest-change">{escape(match.group(2))}</span>'
+        '<span class="ranking-lowest-paren">）</span>'
+    )
+
+
+def render_ranking_table(frame: pd.DataFrame, key: str, bold_longest=False) -> None:
+    """Render either ranking with the shared column styling."""
+    display = frame.copy()
+    display["最安値"] = display["最安値"].map(
+        format_ranking_lowest_for_responsive_display
+    )
+    styles = pd.DataFrame(
+        "background-color: #FFFFFF;", index=display.index, columns=display.columns
+    )
+    if bold_longest and "最長塩漬け期間" in styles:
+        styles.loc[:, "最長塩漬け期間"] += " font-weight: 700;"
+    for row_index, lowest_value in display["最安値"].items():
+        percent_match = re.search(r"([+-]?\d+)％", str(lowest_value))
+        if percent_match:
+            change_percent = int(percent_match.group(1))
+            text_color = "#2563EB" if change_percent >= -10 else "#DC2626"
+            styles.loc[row_index, "最安値"] += (
+                f" color: {text_color}; font-weight: 700;"
+            )
+    styled = display.style.apply(lambda _: styles, axis=None).set_table_styles(
+        TABLE_HEADER_STYLES
+    )
+    with st.container(key=key):
+        render_results_table(
+            styled, 38 * (len(display) + 1) + 4, limit_vertical_height=False
+        )
 
 
 def normalize_prices(raw: pd.DataFrame) -> pd.DataFrame:
@@ -286,6 +294,16 @@ def get_current_price(ticker: str) -> float:
         ticker, period="5d", progress=False, auto_adjust=False
     )
     prices = normalize_prices(raw)
+    if prices.empty or "Close" not in prices.columns:
+        raise RuntimeError("現在の株価を取得できませんでした。")
+    closes = prices["Close"].dropna()
+    if closes.empty:
+        raise RuntimeError("現在の株価を取得できませんでした。")
+    return float(closes.iloc[-1])
+
+
+def get_latest_close(prices: pd.DataFrame) -> float:
+    """Use the latest close from the same history displayed in the result."""
     if prices.empty or "Close" not in prices.columns:
         raise RuntimeError("現在の株価を取得できませんでした。")
     closes = prices["Close"].dropna()
@@ -550,23 +568,24 @@ def load_company_options() -> list[str]:
     return [f"{row.code}｜{row.name}" for row in companies.itertuples(index=False)]
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def build_light_pickling_ranking(
-    start_date: date, end_date: date
+@st.cache_data(ttl=300, show_spinner=False)
+def saved_snapshot():
+    return market_store.get_snapshot()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def saved_ranking_frame(revision, ranking):
+    return market_store.read_nikkei(revision, {"ranking": ranking})
+
+
+def calculate_light_pickling_rankings(
+    start_date: date, end_date: date, *, revision=None, manifest=None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     tickers = [f"{code}.T" for code in NIKKEI225_CODES]
-    history_start_date = (
-        pd.Timestamp(start_date) - pd.DateOffset(years=3)
-    ).date()
-    raw = yf.download(
-        tickers,
-        start=history_start_date,
-        end=end_date + pd.Timedelta(days=1),
-        progress=False,
-        auto_adjust=False,
-        group_by="ticker",
-        threads=True,
-    )
+    if revision is None:
+        revision, manifest = saved_snapshot()
+    raw = saved_ranking_frame(revision, manifest["ranking"])
+    raw = raw.loc[pd.Timestamp(start_date):pd.Timestamp(end_date)]
     company_names = {
         option.split("｜", 1)[0]: option.split("｜", 1)[1]
         for option in load_company_options()
@@ -575,23 +594,22 @@ def build_light_pickling_ranking(
     for code, ticker in zip(NIKKEI225_CODES, tickers):
         try:
             ticker_raw = raw[ticker] if isinstance(raw.columns, pd.MultiIndex) else raw
-            all_prices = normalize_prices(ticker_raw)
-            prices = all_prices.loc[all_prices.index >= pd.Timestamp(start_date)]
+            prices = normalize_prices(ticker_raw)
             current_prices = prices["Close"].dropna()
             if current_prices.empty:
                 continue
             current_price = float(current_prices.iloc[-1])
             three_year_cutoff = pd.Timestamp(end_date) - pd.DateOffset(years=3)
-            older_highs = all_prices.loc[
-                all_prices.index < three_year_cutoff, "High"
+            older_highs = prices.loc[
+                prices.index < three_year_cutoff, "High"
             ].dropna()
             streaks = find_streaks(prices, "Low", current_price)
             if streaks.empty:
                 continue
             longest_days = int(streaks["下回った日数"].max())
-            lowest_price = float(prices["Low"].dropna().min())
-            streak_lowest_price = float(streaks["期間中最安値（円）"].min())
-            lowest_change_percent = (lowest_price / current_price - 1) * 100
+            lowest_price = float(streaks["期間中最安値（円）"].min())
+            ranking_lowest_price = float(prices["Low"].dropna().min())
+            lowest_change_percent = (ranking_lowest_price / current_price - 1) * 100
             rounded_current = Decimal(str(current_price)).quantize(
                 Decimal("1"), rounding=ROUND_HALF_UP
             )
@@ -603,8 +621,8 @@ def build_light_pickling_ranking(
                     "株価": f"{rounded_current:,}円",
                     "塩漬け回数": f"{len(streaks)}回",
                     "最安値": format_price_with_change(lowest_price, current_price),
-                    "_浅漬け最安値": format_price_with_change(
-                        streak_lowest_price, current_price
+                    "_最安値表示": format_price_with_change(
+                        ranking_lowest_price, current_price
                     ),
                     "_最長日数": longest_days,
                     "_最安値騰落率": lowest_change_percent,
@@ -617,29 +635,33 @@ def build_light_pickling_ranking(
         except (KeyError, TypeError, ValueError, IndexError):
             continue
     if not rows:
-        empty = pd.DataFrame(
-            columns=["最安値", "銘柄", "最長塩漬け期間", "株価", "塩漬け回数"]
+        empty_ranking = pd.DataFrame(
+            columns=["最長塩漬け期間", "銘柄", "株価", "塩漬け回数", "最安値"]
         )
-        return empty, empty.copy()
+        return empty_ranking, empty_ranking.copy()
+
     all_rankings = pd.DataFrame(rows)
-    lowest_ranking = (
-        all_rankings
-        .sort_values(["_最安値騰落率", "銘柄"], ascending=[False, True])
-        .head(10)
-        .reset_index(drop=True)
-    )
-    shallow_ranking = (
+    duration_ranking = (
         all_rankings.loc[all_rankings["_塩漬け順位対象"]]
         .sort_values(["_最長日数", "銘柄"], ascending=[True, True])
         .head(10)
         .reset_index(drop=True)
     )
+    lowest_price_ranking = (
+        all_rankings.sort_values(
+            ["_最安値騰落率", "銘柄"], ascending=[False, True]
+        )
+        .head(10)
+        .reset_index(drop=True)
+    )
 
-    def finish(frame: pd.DataFrame, shallow=False) -> pd.DataFrame:
-        frame = frame.copy()
-        if shallow:
-            frame["最安値"] = frame["_浅漬け最安値"]
-        frame["銘柄"] = frame.apply(
+    def finish_ranking(
+        ranking: pd.DataFrame, use_all_period_lowest: bool = False
+    ) -> pd.DataFrame:
+        ranking = ranking.copy()
+        if use_all_period_lowest:
+            ranking["最安値"] = ranking["_最安値表示"]
+        ranking["銘柄"] = ranking.apply(
             lambda row: (
                 f'<a href="?ranking_code={row["_証券コード"]}'
                 f'&ranking_start={start_date.year}" target="_self">'
@@ -647,14 +669,119 @@ def build_light_pickling_ranking(
             ),
             axis=1,
         )
-        return frame.drop(
-            columns=["_最長日数", "_最安値騰落率", "_証券コード", "_浅漬け最安値", "_塩漬け順位対象"]
+        return ranking.drop(
+            columns=[
+                "_最長日数",
+                "_最安値騰落率",
+                "_最安値表示",
+                "_塩漬け順位対象",
+                "_証券コード",
+            ]
         )
 
-    return (
-        finish(lowest_ranking)[["最安値", "銘柄", "最長塩漬け期間", "株価", "塩漬け回数"]],
-        finish(shallow_ranking, shallow=True)[["最長塩漬け期間", "銘柄", "株価", "塩漬け回数", "最安値"]],
+    finished_lowest_price_ranking = finish_ranking(
+        lowest_price_ranking, use_all_period_lowest=True
+    )[
+        ["最安値", "銘柄", "最長塩漬け期間", "株価", "塩漬け回数"]
+    ]
+    return finish_ranking(duration_ranking), finished_lowest_price_ranking
+
+
+def latest_ranking_refresh_date(now: datetime | None = None) -> date:
+    """Return the latest weekday whose 16:00 JST refresh time has passed."""
+    current = now.astimezone(JAPAN_TIMEZONE) if now else datetime.now(JAPAN_TIMEZONE)
+    refresh_date = current.date()
+    if current.weekday() < 5 and current.time() < RANKING_REFRESH_TIME:
+        refresh_date -= timedelta(days=1)
+    while refresh_date.weekday() >= 5:
+        refresh_date -= timedelta(days=1)
+    return refresh_date
+
+
+@st.cache_resource
+def ranking_cache_state() -> dict:
+    return {"lock": threading.Lock(), "entries": None}
+
+
+def load_ranking_cache() -> dict:
+    try:
+        stored = json.loads(RANKING_CACHE_FILE.read_text(encoding="utf-8"))
+        return stored if isinstance(stored, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        return {}
+
+
+def save_ranking_cache(entries: dict) -> None:
+    temporary_file = RANKING_CACHE_FILE.with_suffix(".tmp")
+    temporary_file.write_text(
+        json.dumps(entries, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
     )
+    temporary_file.replace(RANKING_CACHE_FILE)
+
+
+def get_light_pickling_ranking(
+    start_date: date, requested_end_date: date
+) -> tuple[pd.DataFrame, pd.DataFrame, date, bool]:
+    """Refresh once after 16:00 JST on weekdays and reuse the saved ranking."""
+    revision, manifest = saved_snapshot()
+    if not manifest.get("ranking"):
+        raise RuntimeError("ランキング用データの初回更新がまだ完了していません。")
+    refresh_date = date.fromisoformat(manifest["ranking"]["as_of"])
+    effective_end_date = min(requested_end_date, refresh_date)
+    cache_key = f"snapshot-v1:{revision}:{start_date.isoformat()}:{effective_end_date.isoformat()}"
+    state = ranking_cache_state()
+
+    with state["lock"]:
+        if state["entries"] is None:
+            state["entries"] = load_ranking_cache()
+        cached = state["entries"].get(cache_key)
+        if (
+            isinstance(cached, dict)
+            and isinstance(cached.get("duration_records"), list)
+            and isinstance(cached.get("lowest_price_records"), list)
+            and (cached["duration_records"] or cached["lowest_price_records"])
+        ):
+            duration_ranking = pd.DataFrame(
+                cached["duration_records"],
+                columns=cached.get("duration_columns"),
+            )
+            lowest_price_ranking = pd.DataFrame(
+                cached["lowest_price_records"],
+                columns=cached.get("lowest_price_columns"),
+            )
+            return duration_ranking, lowest_price_ranking, refresh_date, False
+
+        duration_ranking, lowest_price_ranking = calculate_light_pickling_rankings(
+            start_date,
+            effective_end_date,
+            revision=revision,
+            manifest=manifest,
+        )
+        if duration_ranking.empty and lowest_price_ranking.empty:
+            raise RuntimeError(
+                "株価データを取得できませんでした。通信状態を確認して再度お試しください。"
+                "取得失敗の結果は保存していません。"
+            )
+        state["entries"][cache_key] = {
+            "updated_at": datetime.now(JAPAN_TIMEZONE).isoformat(timespec="seconds"),
+            "refresh_date": refresh_date.isoformat(),
+            "start_date": start_date.isoformat(),
+            "end_date": effective_end_date.isoformat(),
+            "duration_columns": list(duration_ranking.columns),
+            "duration_records": duration_ranking.to_dict(orient="records"),
+            "lowest_price_columns": list(lowest_price_ranking.columns),
+            "lowest_price_records": lowest_price_ranking.to_dict(orient="records"),
+        }
+        # Keep recent records only so the cache file does not grow without bound.
+        state["entries"] = dict(list(state["entries"].items())[-30:])
+        try:
+            save_ranking_cache(state["entries"])
+        except OSError:
+            # The process-wide cache still prevents repeated aggregation if disk
+            # persistence is temporarily unavailable.
+            pass
+        return duration_ranking, lowest_price_ranking, refresh_date, True
 
 
 def add_desktop_search_history(search_values) -> None:
@@ -1018,60 +1145,19 @@ components.html(
     """,
     height=0,
 )
-components.html(
-    """
-    <script>
-    (() => {
-        const page = window.parent;
-        if (!['127.0.0.1', 'localhost'].includes(page.location.hostname)) return;
-        const controlId = 'local-view-switcher';
-        if (page.document.getElementById(controlId)) return;
-        const control = page.document.createElement('div');
-        control.id = controlId;
-        control.innerHTML = `
-            <span>表示確認（初期：PC版）</span>
-            <button type="button" data-width="1366" data-height="850" data-name="desktopPreview">PC版</button>
-            <button type="button" data-width="390" data-height="850" data-name="mobilePreview">スマホ版</button>
-        `;
-        Object.assign(control.style, {
-            position: 'fixed', right: '16px', bottom: '58px', zIndex: '1002',
-            display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 8px',
-            border: '1px solid #CBD5E1', borderRadius: '12px',
-            background: 'rgba(255,255,255,0.96)', boxShadow: '0 8px 24px rgba(15,23,42,0.14)',
-            color: '#334155', fontFamily: '"Yu Gothic", sans-serif', fontSize: '12px',
-            fontWeight: '700', backdropFilter: 'blur(8px)'
-        });
-        for (const button of control.querySelectorAll('button')) {
-            Object.assign(button.style, {
-                border: '0', borderRadius: '8px', padding: '7px 10px',
-                background: button.dataset.name === 'desktopPreview' ? '#0F766E' : '#334155',
-                color: '#FFFFFF', fontSize: '12px', fontWeight: '700', cursor: 'pointer'
-            });
-            button.addEventListener('click', () => {
-                const preview = page.open(
-                    page.location.href,
-                    button.dataset.name,
-                    `popup=yes,width=${button.dataset.width},height=${button.dataset.height},resizable=yes,scrollbars=yes`
-                );
-                if (preview) preview.focus();
-            });
-        }
-        page.document.body.appendChild(control);
-    })();
-    </script>
-    """,
-    height=0,
-)
 st.markdown(
     """
     <style>
     .st-key-mobile_filters { display: none; }
-    [data-testid="stSidebarNav"] { display: none; }
     .st-key-mobile_ranking_controls { display: none; }
     .st-key-mobile_results_table { display: none; }
     .st-key-mobile_search_history { display: none; }
     .st-key-mobile_full_period_graph { display: none; }
-    .full-period-title .mobile-title-break { display: none; }
+    .recent-period-short { display: none; }
+    .recent-assessment-desktop { display: none; }
+    .recent-assessment-mobile { display: block; }
+    .review-statistics-line,
+    .review-card-note { display: none; }
     .st-key-nanpin_indicator_card {
         margin: 36px 16px 0;
     }
@@ -1160,25 +1246,45 @@ st.markdown(
         overflow-wrap: anywhere;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(1),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(1) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(1),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(1),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1) {
         width: 18%;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(2),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(2) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(2),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(2),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(2) {
         width: 32%;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(3),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(3),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(3) {
         width: 14%;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(4),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(4),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(4) {
         width: 15%;
     }
     .st-key-desktop_ranking_table .results-table-scroll th:nth-child(5),
-    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5) {
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(5),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(5) {
         width: 20%;
     }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(1),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(1) { width: 17%; }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(2),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(2) { width: 29%; }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(3),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3) { width: 13%; }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(4),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4) { width: 14%; }
+    .st-key-desktop_ranking_table .results-table-scroll th:nth-child(5),
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5) { width: 27%; }
     .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(1),
     .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1) { width: 27%; }
     .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(2),
@@ -1189,6 +1295,16 @@ st.markdown(
     .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(4) { width: 13%; }
     .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(5),
     .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(5) { width: 11%; }
+    .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5),
+    .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1) {
+        white-space: nowrap;
+        overflow-wrap: normal;
+    }
+    .ranking-lowest-price,
+    .ranking-lowest-change,
+    .ranking-lowest-paren {
+        display: inline;
+    }
     .results-table-scroll {
         width: 100%;
         overflow: auto;
@@ -1265,13 +1381,12 @@ st.markdown(
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 1rem;
-        width: 70%;
-        max-width: 602px;
+        max-width: 860px;
         margin: 1.4rem 0 1.8rem;
     }
     .app-banner {
         display: flex;
-        height: 66px;
+        height: 94px;
         align-items: center;
         justify-content: center;
         overflow: hidden;
@@ -1380,10 +1495,9 @@ st.markdown(
         .app-banner-grid {
             grid-template-columns: 1fr;
             gap: 0.7rem;
-            width: 70%;
-            margin: 1rem auto 1.4rem;
+            margin: 1rem 0 1.4rem;
         }
-        .app-banner { height: 53px; }
+        .app-banner { height: 76px; }
         .stAppViewBlockContainer,
         .stMainBlockContainer,
         [data-testid="stAppViewBlockContainer"] {
@@ -1391,14 +1505,46 @@ st.markdown(
         }
         .st-key-mobile_filters { display: block; }
         .st-key-mobile_ranking_controls { display: block; }
-        .st-key-mobile_full_period_graph { display: block; }
-        .st-key-desktop_full_period_graph { display: none; }
-        .full-period-title {
-            margin-bottom: 0.75rem;
-            font-size: 16px !important;
-            line-height: 1.45;
+        .st-key-desktop_ranking_table .results-table-scroll table,
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll table {
+            font-size: clamp(0.62rem, 2.7vw, 0.75rem);
         }
-        .full-period-title .mobile-title-break { display: block; }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(1),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(1) { width: 17%; }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(2),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(2) { width: 29%; }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(3),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3) { width: 13%; }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(4),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4) { width: 14%; }
+        .st-key-desktop_ranking_table .results-table-scroll th:nth-child(5),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5) { width: 27%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(1),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1) { width: 27%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(2),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(2) { width: 29%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(3),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(3) { width: 20%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(4),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(4) { width: 13%; }
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll th:nth-child(5),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(5) { width: 11%; }
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(3),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(4),
+        .st-key-desktop_ranking_table .results-table-scroll td:nth-child(5),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(1),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(4),
+        .st-key-desktop_lowest_price_ranking_table .results-table-scroll td:nth-child(5) {
+            white-space: nowrap;
+            overflow-wrap: normal;
+        }
+        .ranking-lowest-price,
+        .ranking-lowest-change {
+            display: block;
+        }
+        .ranking-lowest-paren {
+            display: none;
+        }
         .mobile-ranking-note {
             margin: 0.45rem 0 0.9rem;
             color: #111111;
@@ -1528,6 +1674,33 @@ st.markdown(
         }
         .st-key-desktop_results_table { display: none; }
         .st-key-mobile_results_table { display: block; }
+        .st-key-mobile_full_period_graph { display: block; }
+        .st-key-desktop_full_period_graph { display: none; }
+        .recent-period-long { display: none; }
+        .recent-period-short { display: inline; }
+        .recent-assessment-desktop { display: none; }
+        .recent-assessment-mobile {
+            display: block;
+        }
+        .review-statistics-line { display: none; }
+        .full-period-title {
+            margin-bottom: 0.75rem;
+            font-size: 16px !important;
+            line-height: 1.4;
+            white-space: nowrap;
+        }
+        .review-card {
+            font-size: 16px !important;
+        }
+        .review-card-title {
+            font-size: 20px !important;
+        }
+        .review-card-grade {
+            font-size: 17px !important;
+        }
+        .review-card-note {
+            display: none;
+        }
         .st-key-mobile_search_history {
             display: block;
             margin-top: 1.25rem;
@@ -1604,14 +1777,17 @@ if mobile_ranking_requested or desktop_ranking_requested:
         unsafe_allow_html=True,
     )
     ranking_values = mobile_values if mobile_ranking_requested else desktop_values
-    ranking_start_date = ranking_values[4]
+    ranking_start_date = RANKING_FIXED_START_DATE
     ranking_end_date = ranking_values[5]
     with st.container(key="ranking_only_view"):
         try:
             with st.spinner("最安値ランキングを集計しています…"):
-                lowest_price_ranking, shallow_ranking = build_light_pickling_ranking(
-                    ranking_start_date, ranking_end_date
-                )
+                (
+                    shallow_ranking,
+                    lowest_price_ranking,
+                    ranking_refresh_date,
+                    ranking_was_refreshed,
+                ) = get_light_pickling_ranking(ranking_start_date, ranking_end_date)
             st.markdown(
                 '<div id="ranking-results-anchor" style="scroll-margin-top: 4rem;"></div>',
                 unsafe_allow_html=True,
@@ -1652,11 +1828,14 @@ if mobile_ranking_requested or desktop_ranking_requested:
                     bold_longest=True,
                 )
             st.caption("対象：日経平均225（日本経済新聞社公表銘柄）")
+            st.caption(
+                f"更新基準：{format_date_ja(ranking_refresh_date)} 16:00"
+                + ("（更新済み）" if ranking_was_refreshed else "（保存済み）")
+            )
             render_app_banners(
                 ranking_values[0],
                 "mobile" if mobile_ranking_requested else "desktop",
                 ranking_values[4].year,
-                carry_conditions=False,
             )
             scroll_to_result("ranking-results-anchor")
         except (RuntimeError, ValueError, KeyError) as error:
@@ -1665,15 +1844,10 @@ if mobile_ranking_requested or desktop_ranking_requested:
 
 with st.container(key="mobile_search_history"):
     render_search_history("mobile")
-    render_app_banners(
-        mobile_values[0], "mobile", mobile_values[4].year, carry_conditions=False
-    )
+    render_app_banners(mobile_values[0], "mobile", mobile_values[4].year)
 if not mobile_values[-1] and not desktop_values[-1]:
     with st.container(key="desktop_initial_banners"):
-        render_app_banners(
-            desktop_values[0], "desktop", desktop_values[4].year,
-            carry_conditions=False,
-        )
+        render_app_banners(desktop_values[0], "desktop", desktop_values[4].year)
 st.markdown(
     '<div class="app-footer">制作者：木星在住　'
     '<a href="https://x.com/mokuseidayo" target="_blank">Twitter</a></div>',
@@ -1740,9 +1914,9 @@ if run:
                 threshold, light_pickling_days = find_light_pickling_price(
                     prices, column, target_days=30
                 )
-                current_market_price = get_current_price(ticker)
+                current_market_price = get_latest_close(prices)
             elif use_current_price:
-                threshold = get_current_price(ticker)
+                threshold = get_latest_close(prices)
             company_info = get_company_info(ticker)
             company_name = get_company_name(ticker, company_info)
         if column not in prices.columns:
@@ -1828,7 +2002,12 @@ if run:
             display_streaks["開始日"] = display_streaks["開始日"].map(format_date_ja)
             display_streaks["終了日"] = display_streaks["終了日"].map(format_date_ja)
             latest_prices = prices[column].dropna()
-            if not latest_prices.empty and latest_prices.iloc[-1] <= threshold:
+            ongoing_rows = pd.Series(False, index=streaks.index)
+            if (
+                not use_current_price
+                and not latest_prices.empty
+                and latest_prices.iloc[-1] < threshold
+            ):
                 latest_date = latest_prices.index[-1].date()
                 ongoing_rows = streaks["終了日"].eq(latest_date)
                 display_streaks.loc[ongoing_rows, "終了日"] = "—"
@@ -1842,6 +2021,7 @@ if run:
             display_streaks[next_high_column] = display_streaks[next_high_column].map(
                 lambda value: format_price_with_change(value, threshold)
             )
+            display_streaks.loc[ongoing_rows, next_high_column] = "現在塩漬中"
             cell_styles = pd.DataFrame(
                 "", index=display_streaks.index, columns=display_streaks.columns
             )
@@ -1883,6 +2063,9 @@ if run:
             cell_styles.loc[
                 streaks[next_high_column].gt(threshold * 1.1), next_high_column
             ] += " color: #2563EB; font-weight: 700;"
+            cell_styles.loc[ongoing_rows, next_high_column] += (
+                " color: #DC2626; font-weight: 700;"
+            )
             nanpin_columns = ["初回投資"] + [
                 f"第{step}ナンピン" for step in range(1, averaging_down_count + 1)
             ]
@@ -2467,11 +2650,20 @@ if run:
         recent_pickling = recent_chart[recent_chart["基準以下"]].copy()
         has_recent_pickling = not recent_pickling.empty
         if has_recent_pickling:
+            recent_longest_days = max(
+                (
+                    pd.Timestamp(segment["日付"].iloc[-1])
+                    - pd.Timestamp(segment["日付"].iloc[0])
+                ).days
+                + 1
+                for _, segment in recent_pickling.groupby("連続区間")
+            )
             recent_evaluation_start = pd.Timestamp(recent_pickling["日付"].min())
             recent_evaluation_chart = recent_chart[
                 recent_chart["日付"] >= recent_evaluation_start
             ]
         else:
+            recent_longest_days = 0
             recent_evaluation_start = recent_start
             recent_evaluation_chart = recent_chart
 
@@ -2529,8 +2721,23 @@ if run:
                 alt.Tooltip("株価:Q", title=f"{label}（円）", format=",.2f"),
             ],
         )
-        extrema_labels = alt.Chart(extrema_annotations).mark_text(
+        extrema_high_label = alt.Chart(extrema_annotations).transform_filter(
+            alt.datum["種別"] == "最高値"
+        ).mark_text(
             dy=-14, fontSize=12, fontWeight="bold", color="#16A34A"
+        ).encode(
+            x="日付:T",
+            y="株価:Q",
+            text="注記:N",
+        )
+        extrema_low_label = alt.Chart(extrema_annotations).transform_filter(
+            alt.datum["種別"] == "最安値"
+        ).mark_text(
+            dy=16,
+            baseline="top",
+            fontSize=12,
+            fontWeight="bold",
+            color="#16A34A",
         ).encode(
             x="日付:T",
             y="株価:Q",
@@ -2538,8 +2745,7 @@ if run:
         )
         full_period_title = (
             '<div class="full-period-title" style="font-size:20px;font-weight:700;">'
-            f'期間：<span class="mobile-title-break"></span>'
-            f"{format_month_ja(start_date)}～{format_month_ja(end_date)}"
+            f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
             "</div>"
         )
         full_period_chart = (
@@ -2591,6 +2797,21 @@ if run:
             ),
             detail="オレンジ区間:N",
         )
+        mobile_final_average_below = mobile_base.transform_filter(
+            alt.datum["最終平均以下"] == True
+        )
+        mobile_final_average_below_line = mobile_final_average_below.mark_line(
+            color="#DC2626", strokeWidth=3
+        ).encode(detail="最終平均連続区間:N")
+        mobile_final_average_below_points = mobile_final_average_below.mark_circle(
+            color="#DC2626", size=45
+        )
+        mobile_nanpin_recovery_line = mobile_base.transform_filter(
+            alt.datum["ナンピン有効段階"] != None
+        ).mark_line(strokeWidth=3).encode(
+            color=alt.Color("ナンピン線色:N", scale=None, legend=None),
+            detail="ナンピン連続区間:N",
+        )
         mobile_full_period_chart = (
             year_lines
             + mobile_normal_line
@@ -2612,6 +2833,9 @@ if run:
         )
         recent_low_percent = int((recent_low / threshold - 1) * 100)
         recent_high_percent = int((recent_high / threshold - 1) * 100)
+        recent_longest_days_color = (
+            "#DC2626" if recent_longest_days >= 30 else "#2563EB"
+        )
         if recent_low_percent >= 0:
             low_assessment = "下落による被害はなし"
         elif recent_low_percent >= -5:
@@ -2647,6 +2871,14 @@ if run:
         else:
             longest_days = int(streaks["下回った日数"].max())
             streak_count = len(streaks)
+            outside_recent_year_streaks = streaks[
+                pd.to_datetime(streaks["開始日"]) < recent_start
+            ]
+            outside_recent_year_longest_days = (
+                int(outside_recent_year_streaks["下回った日数"].max())
+                if not outside_recent_year_streaks.empty
+                else None
+            )
             if longest_days <= 7:
                 review_grade = "S"
             elif longest_days <= 30:
@@ -2679,10 +2911,24 @@ if run:
                 )
                 outlook_color = "#DC2626"
             else:
-                outlook_summary = (
-                    f"{threshold:,.0f}円以下でも塩漬けが長期化した実績があるため、"
-                    "購入時期には注意が必要です。"
-                )
+                if (
+                    outside_recent_year_longest_days is not None
+                    and outside_recent_year_longest_days > recent_longest_days
+                ):
+                    outlook_summary = (
+                        f"直近一年外で{outside_recent_year_longest_days}日の"
+                        "塩漬け実績があるため、購入時期には注意が必要です。"
+                    )
+                elif has_recent_pickling:
+                    outlook_summary = (
+                        f"直近一年で{recent_longest_days}日の"
+                        "塩漬け実績があるため、購入時期には注意が必要です。"
+                    )
+                else:
+                    outlook_summary = (
+                        f"{threshold:,.0f}円以下でも塩漬けが長期化した実績があるため、"
+                        "購入時期には注意が必要です。"
+                    )
                 outlook_color = "#DC2626"
         grade_colors = {
             "S": "#B7791F",
@@ -2704,7 +2950,17 @@ if run:
             grade_label = "評価不可"
             grade_color = "#64748B"
             recent_assessment_html = (
-                "<div>現在高値の可能性があるため評価不可です。</div>"
+                f'<div>直近1年の最長塩漬けは'
+                f'<strong style="color:{recent_longest_days_color};">'
+                f'{recent_longest_days}日</strong></div>'
+                f'<div>最安値は<strong style="color:#DC2626;">'
+                f'{recent_low_percent:+d}％（{recent_low:,.0f}円）</strong>で'
+                f'<strong style="color:#DC2626;">{low_assessment}</strong></div>'
+                f'<div>最高値は<strong style="color:#2563EB;">'
+                f'{recent_high_percent:+d}％（{recent_high:,.0f}円）</strong>で'
+                f'<strong style="color:#2563EB;">{high_assessment}</strong></div>'
+                '<br>'
+                '<div>現在高値の可能性があるため評価不可です。</div>'
             )
         elif not has_recent_pickling:
             grade_label = "評価不可"
@@ -2716,7 +2972,8 @@ if run:
             grade_label = f"{review_grade}評価"
             grade_color = grade_colors[review_grade]
             recent_assessment_html = (
-                f"<div>直近1年の塩漬け開始後（{recent_statistics_period}）の"
+                f'<div class="recent-assessment-desktop">直近1年の塩漬け開始後'
+                f'（{recent_statistics_period}）の'
                 f"<br>最安値は"
                 f'<strong style="color:#DC2626;">'
                 f"{recent_low_percent:+d}％（{recent_low:,.0f}円）</strong>で"
@@ -2725,6 +2982,18 @@ if run:
                 f'<strong style="color:#2563EB;">'
                 f"{recent_high_percent:+d}％（{recent_high:,.0f}円）</strong>で"
                 f'<strong style="color:#2563EB;">{high_assessment}</strong>です。</div>'
+                f'<div class="recent-assessment-mobile">'
+                f'<div>直近1年の最長塩漬けは'
+                f'<strong style="color:{recent_longest_days_color};">'
+                f'{recent_longest_days}日</strong></div>'
+                f'<div>最安値は<strong style="color:#DC2626;">'
+                f'{recent_low_percent:+d}％（{recent_low:,.0f}円）</strong>で'
+                f'<strong style="color:#DC2626;">{low_assessment}</strong></div>'
+                f'<div>最高値は<strong style="color:#2563EB;">'
+                f'{recent_high_percent:+d}％（{recent_high:,.0f}円）</strong>で'
+                f'<strong style="color:#2563EB;">{high_assessment}</strong></div>'
+                f'<br>'
+                f'</div>'
                 f'<div><strong style="color:{outlook_color};">'
                 f"{outlook_summary}</strong></div>"
             )
@@ -2747,16 +3016,16 @@ if run:
                 nanpin_review_lines.append(
                     '<div style="margin-bottom:12px;">'
                     f"{escape(company_name)}の現在株価"
-                    f"{format_yen(investment_price)}に<br>初回は"
+                    f"{format_yen(investment_price)}に"
                     f'<span style="color:#2563EB;">'
-                    f"{format_man_yen(investment_amount)}</span>投資し…</div>"
+                    f"{format_man_yen(investment_amount)}</span>投資した場合…</div>"
                 )
                 nanpin_mobile_review_lines.append(
                     '<div class="nanpin-review-section">'
                     f"{escape(company_name)}の現在株価"
-                    f"{format_yen(investment_price)}に<br>初回は"
+                    f"{format_yen(investment_price)}に<br>"
                     f'<span style="color:#2563EB;">'
-                    f"{format_man_yen(investment_amount)}</span>投資し…</div>"
+                    f"{format_man_yen(investment_amount)}</span>投資した場合…</div>"
                 )
                 continue
             average_gap = calculate_nanpin_gap_percent(
@@ -2898,7 +3167,7 @@ if run:
             f"{review_price_context}</span></div>"
         )
         review_note_html = (
-            '<div style="font-size:14px;color:#64748B;margin-top:8px;">'
+            '<div class="review-card-note" style="font-size:14px;color:#64748B;margin-top:8px;">'
             "※過去の株価に基づく傾向であり、将来の利益を保証するものではありません。"
             "</div>"
         )

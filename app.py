@@ -27,6 +27,7 @@ SEARCH_HISTORY_COOKIE = "stock_search_history"
 RANKING_CACHE_FILE = Path(__file__).with_name(".light_pickling_ranking_cache.json")
 JAPAN_TIMEZONE = timezone(timedelta(hours=9))
 RANKING_REFRESH_TIME = time(16, 0)
+RANKING_FIXED_START_DATE = date(2015, 1, 1)
 TABLE_HEADER_STYLES = [
     {
         "selector": "th",
@@ -1675,7 +1676,7 @@ if mobile_ranking_requested or desktop_ranking_requested:
         unsafe_allow_html=True,
     )
     ranking_values = mobile_values if mobile_ranking_requested else desktop_values
-    ranking_start_date = ranking_values[4]
+    ranking_start_date = RANKING_FIXED_START_DATE
     ranking_end_date = ranking_values[5]
     with st.container(key="ranking_only_view"):
         try:
