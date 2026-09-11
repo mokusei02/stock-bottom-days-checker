@@ -8,6 +8,7 @@ import threading
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
+from urllib.parse import urlencode
 
 import altair as alt
 import pandas as pd
@@ -406,26 +407,15 @@ def render_app_banners(
 ) -> None:
     """Show equal-size links to both stock tools and carry the company code."""
     assets = Path(__file__).with_name("assets")
-    threshold = int(st.session_state.get(f"{key_prefix}_threshold", 320))
-    use_current = bool(st.session_state.get(f"{key_prefix}_use_current_price", True))
-    use_shallow = bool(st.session_state.get(f"{key_prefix}_light_pickling_price", False))
     if start_year is None:
         start_year = int(st.session_state.get(f"{key_prefix}_start_year_v2", 2015))
-    reference_years = min(20, max(1, date.today().year - int(start_year)))
-    nanpin_query = {}
-    salt_query = {}
-    if carry_conditions:
-        nanpin_query = {
-            "app_code": security_code,
-            "app_reference_years": reference_years,
-        }
-        salt_query = {
-            "app_code": security_code,
-            "app_threshold": threshold,
-            "app_current": int(use_current),
-            "app_shallow": int(use_shallow),
-            "app_start_year": int(start_year),
-        }
+    nanpin_query = {"top": "1"}
+    salt_query = {"top": "1"}
+    if carry_conditions and security_code:
+        nanpin_query["app_code"] = security_code
+        salt_query["app_code"] = security_code
+    nanpin_href = "/nanpin?" + urlencode(nanpin_query)
+    salt_href = "/?" + urlencode(salt_query)
 
     render_index = getattr(render_app_banners, "_render_index", 0)
     render_app_banners._render_index = render_index + 1
@@ -444,18 +434,25 @@ def render_app_banners(
         .st-key-{grid_key} {{ width:70%; max-width:602px; margin:1.4rem 0; }}
         .st-key-{grid_key} [data-testid="stHorizontalBlock"] {{ gap:1rem; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a,
-        .st-key-{salt_key} [data-testid="stPageLink"] a {{
+        .st-key-{salt_key} [data-testid="stPageLink"] a,
+        .st-key-{nanpin_key} .app-banner-anchor,
+        .st-key-{salt_key} .app-banner-anchor {{
+            display:block;
             height:63px; padding:0; overflow:hidden; background:#fff center/contain no-repeat;
             border:2px solid #AEB5BF; border-radius:.65rem; box-sizing:border-box;
         }}
-        .st-key-{nanpin_key} [data-testid="stPageLink"] a {{
+        .st-key-{nanpin_key} [data-testid="stPageLink"] a,
+        .st-key-{nanpin_key} .app-banner-anchor {{
             background-image:url("data:image/png;base64,{nanpin_image}");
         }}
-        .st-key-{salt_key} [data-testid="stPageLink"] a {{
+        .st-key-{salt_key} [data-testid="stPageLink"] a,
+        .st-key-{salt_key} .app-banner-anchor {{
             background-image:url("data:image/png;base64,{salt_image}");
         }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a:hover,
-        .st-key-{salt_key} [data-testid="stPageLink"] a:hover {{ border-color:#2563EB; }}
+        .st-key-{salt_key} [data-testid="stPageLink"] a:hover,
+        .st-key-{nanpin_key} .app-banner-anchor:hover,
+        .st-key-{salt_key} .app-banner-anchor:hover {{ border-color:#2563EB; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a [data-testid="stMarkdownContainer"],
         .st-key-{salt_key} [data-testid="stPageLink"] a [data-testid="stMarkdownContainer"] {{
             display:none !important;
@@ -469,7 +466,9 @@ def render_app_banners(
                 width:100% !important; flex:0 0 auto !important;
             }}
             .st-key-{nanpin_key} [data-testid="stPageLink"] a,
-            .st-key-{salt_key} [data-testid="stPageLink"] a {{ height:53px; }}
+            .st-key-{salt_key} [data-testid="stPageLink"] a,
+            .st-key-{nanpin_key} .app-banner-anchor,
+            .st-key-{salt_key} .app-banner-anchor {{ height:53px; }}
         }}
         </style>
         """,
@@ -479,19 +478,17 @@ def render_app_banners(
         nanpin_column, salt_column = st.columns(2)
         with nanpin_column:
             with st.container(key=nanpin_key):
-                st.page_link(
-                    "pages/nanpin.py",
-                    label="絶対安全ナンピン君",
-                    query_params=nanpin_query,
-                    width="stretch",
+                st.markdown(
+                    f'<a class="app-banner-anchor" href="{nanpin_href}" '
+                    'target="_self" aria-label="絶対安全ナンピン君"></a>',
+                    unsafe_allow_html=True,
                 )
         with salt_column:
             with st.container(key=salt_key):
-                st.page_link(
-                    "app.py",
-                    label="塩漬け日数チェッカー",
-                    query_params=salt_query,
-                    width="stretch",
+                st.markdown(
+                    f'<a class="app-banner-anchor" href="{salt_href}" '
+                    'target="_self" aria-label="塩漬け日数チェッカー"></a>',
+                    unsafe_allow_html=True,
                 )
 
 
@@ -781,6 +778,7 @@ def get_desktop_search_history() -> list[dict]:
 
 
 def restore_search(entry: dict, key_prefix: str) -> None:
+    st.session_state.pop("force_clean_top", None)
     st.session_state[f"{key_prefix}_company"] = entry["company"]
     st.session_state[f"{key_prefix}_threshold"] = int(entry["threshold"])
     st.session_state[f"{key_prefix}_use_current_price"] = bool(
@@ -839,6 +837,12 @@ def select_price_mode(key_prefix: str, selected_mode: str) -> None:
         st.session_state[light_key] = False
     elif st.session_state.get(current_key, False):
         st.session_state[light_key] = False
+
+
+def activate_ranking_view(key_prefix: str) -> None:
+    """Keep the ranking visible while its start-year selector reruns the app."""
+    st.session_state["active_ranking_view"] = key_prefix
+    st.session_state["ranking_start_year"] = 2015
 
 
 def render_search_controls(
@@ -922,7 +926,11 @@ def render_search_controls(
             unsafe_allow_html=True,
         )
     run = st.button(
-        "集計する", type="primary", use_container_width=True, key=f"{key_prefix}_run"
+        "集計する",
+        type="primary",
+        use_container_width=True,
+        key=f"{key_prefix}_run",
+        on_click=lambda: st.session_state.pop("force_clean_top", None),
     )
     if key_prefix == "desktop":
         st.button(
@@ -930,6 +938,8 @@ def render_search_controls(
             type="primary",
             use_container_width=True,
             key=f"{key_prefix}_light_pickling_ranking",
+            on_click=activate_ranking_view,
+            args=(key_prefix,),
         )
     return (
         security_code,
@@ -975,10 +985,57 @@ def scroll_to_result(anchor_id: str) -> None:
 
 st.set_page_config(page_title="塩漬け日数チェッカー", page_icon="📉", layout="wide")
 
+# A banner always opens a clean top page. Streamlit keeps session state and the
+# browser's scroll position while moving between pages, so reset both.
+top_navigation_requested = str(st.query_params.get("top", "")).strip() == "1"
+top_linked_company_code = str(st.query_params.get("app_code", "")).strip().upper()
+if top_navigation_requested:
+    for transient_key in (
+        "active_ranking_view",
+        "ranking_company_run",
+        "mobile_history_run",
+        "desktop_history_run",
+        "mobile_gap_changed_run",
+        "desktop_gap_changed_run",
+        "mobile_light_pickling_ranking",
+        "desktop_light_pickling_ranking",
+    ):
+        st.session_state.pop(transient_key, None)
+    st.session_state["force_clean_top"] = True
+    st.query_params.clear()
+    components.html(
+        """
+        <script>
+        (() => {
+            const resetTop = () => {
+                try {
+                    window.parent.scrollTo(0, 0);
+                    const app = window.parent.document.querySelector(
+                        '[data-testid="stAppViewContainer"]'
+                    );
+                    if (app) app.scrollTo(0, 0);
+                } catch (_) {}
+            };
+            [0, 50, 150, 400, 800].forEach(delay =>
+                window.setTimeout(resetTop, delay)
+            );
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
 # Older versions stored search history in the URL. Remove that legacy parameter
 # now that history is persisted locally, so the address always stays clean.
 if "history" in st.query_params:
     del st.query_params["history"]
+
+# Both apps link to this one canonical ranking view. Keeping the ranking on
+# the salt-checker page prevents the two copies from drifting apart again.
+if str(st.query_params.get("ranking_view", "")).strip() == "1":
+    st.session_state["active_ranking_view"] = "desktop"
+    st.session_state["ranking_start_year"] = 2015
+    del st.query_params["ranking_view"]
 
 # ランキングの企業名リンクから、同じ企業を現在値で自動集計する。
 ranking_code = str(st.query_params.get("ranking_code", "")).strip().upper()
@@ -992,24 +1049,21 @@ if ranking_code:
         None,
     )
     if ranking_company:
-        try:
-            ranking_start_year = int(st.query_params.get("ranking_start", 2015))
-        except (TypeError, ValueError):
-            ranking_start_year = 2015
-        if ranking_start_year not in START_YEAR_OPTIONS:
-            ranking_start_year = 2015
         for prefix in ("mobile", "desktop"):
             st.session_state[f"{prefix}_company"] = ranking_company
+            st.session_state[f"{prefix}_threshold"] = 320
             st.session_state[f"{prefix}_use_current_price"] = True
             st.session_state[f"{prefix}_light_pickling_price"] = False
-            st.session_state[f"{prefix}_start_year_v2"] = ranking_start_year
+            st.session_state[f"{prefix}_start_year_v2"] = 2015
         st.session_state["ranking_company_run"] = True
     del st.query_params["ranking_code"]
     if "ranking_start" in st.query_params:
         del st.query_params["ranking_start"]
 
 # バナーから移動した場合は、同じ企業をこのアプリの初期設定で自動集計する。
-linked_company_code = str(st.query_params.get("app_code", "")).strip().upper()
+linked_company_code = top_linked_company_code or str(
+    st.query_params.get("app_code", "")
+).strip().upper()
 if linked_company_code:
     linked_company = next(
         (
@@ -1020,25 +1074,16 @@ if linked_company_code:
         None,
     )
     if linked_company:
-        def linked_int(name: str, default: int) -> int:
-            try:
-                return int(float(st.query_params.get(name, default)))
-            except (TypeError, ValueError):
-                return default
-
-        threshold = max(0, linked_int("app_threshold", 320))
-        use_current = bool(linked_int("app_current", 1))
-        use_shallow = bool(linked_int("app_shallow", 0))
-        requested_start_year = linked_int("app_start_year", 2015)
-        start_year = min(START_YEAR_OPTIONS, key=lambda year: abs(year - requested_start_year))
         for prefix in ("mobile", "desktop"):
             st.session_state[f"{prefix}_company"] = linked_company
-            st.session_state[f"{prefix}_threshold"] = threshold
-            st.session_state[f"{prefix}_use_current_price"] = use_current
-            st.session_state[f"{prefix}_light_pickling_price"] = use_shallow
-            st.session_state[f"{prefix}_start_year_v2"] = start_year
+            st.session_state[f"{prefix}_threshold"] = 320
+            st.session_state[f"{prefix}_use_current_price"] = True
+            st.session_state[f"{prefix}_light_pickling_price"] = False
+            st.session_state[f"{prefix}_start_year_v2"] = 2015
+        st.session_state.pop("force_clean_top", None)
         st.session_state["ranking_company_run"] = True
-    del st.query_params["app_code"]
+    if "app_code" in st.query_params:
+        del st.query_params["app_code"]
     for linked_param in ("app_threshold", "app_current", "app_shallow", "app_start_year"):
         if linked_param in st.query_params:
             del st.query_params[linked_param]
@@ -1122,6 +1167,10 @@ st.markdown(
     .st-key-mobile_filters { display: none; }
     [data-testid="stSidebarNav"] { display: none; }
     .st-key-mobile_ranking_controls { display: none; }
+    .st-key-ranking_start_year {
+        width: 260px;
+        max-width: 100%;
+    }
     .st-key-mobile_results_table { display: none; }
     .st-key-mobile_search_history { display: none; }
     .st-key-mobile_full_period_graph { display: none; }
@@ -1645,6 +1694,8 @@ with st.container(key="mobile_ranking_controls"):
         type="primary",
         use_container_width=True,
         key="mobile_light_pickling_ranking",
+        on_click=activate_ranking_view,
+        args=("mobile",),
     )
     if not mobile_ranking_requested:
         st.markdown(
@@ -1666,13 +1717,21 @@ with st.sidebar:
         render_search_history("desktop")
 
 if st.session_state.pop("ranking_company_run", False):
+    st.session_state.pop("active_ranking_view", None)
     desktop_values = (*desktop_values[:-1], True)
     add_desktop_search_history(desktop_values)
 
 desktop_ranking_requested = st.session_state.get(
     "desktop_light_pickling_ranking", False
 )
-if mobile_ranking_requested or desktop_ranking_requested:
+if mobile_values[-1] or desktop_values[-1]:
+    st.session_state.pop("active_ranking_view", None)
+active_ranking_view = st.session_state.get("active_ranking_view")
+if mobile_ranking_requested:
+    active_ranking_view = "mobile"
+elif desktop_ranking_requested:
+    active_ranking_view = "desktop"
+if active_ranking_view in {"mobile", "desktop"}:
     st.markdown(
         """
         <style>
@@ -1686,10 +1745,17 @@ if mobile_ranking_requested or desktop_ranking_requested:
         """,
         unsafe_allow_html=True,
     )
-    ranking_values = mobile_values if mobile_ranking_requested else desktop_values
-    ranking_start_date = RANKING_FIXED_START_DATE
+    ranking_values = mobile_values if active_ranking_view == "mobile" else desktop_values
     ranking_end_date = ranking_values[5]
     with st.container(key="ranking_only_view"):
+        ranking_start_year = st.selectbox(
+            "開始日",
+            options=START_YEAR_OPTIONS,
+            index=START_YEAR_OPTIONS.index(2015),
+            format_func=lambda year: f"{year}年1月～",
+            key="ranking_start_year",
+        )
+        ranking_start_date = date(ranking_start_year, 1, 1)
         try:
             with st.spinner("最安値ランキングを集計しています…"):
                 (
@@ -1745,8 +1811,8 @@ if mobile_ranking_requested or desktop_ranking_requested:
             )
             render_app_banners(
                 ranking_values[0],
-                "mobile" if mobile_ranking_requested else "desktop",
-                ranking_values[4].year,
+                active_ranking_view,
+                ranking_start_year,
                 carry_conditions=False,
             )
             scroll_to_result("ranking-results-anchor")
@@ -1778,6 +1844,8 @@ if mobile_values[-1]:
 else:
     security_code, threshold, use_current_price, light_pickling_price, start_date, end_date, run = desktop_values
     active_search_prefix = "desktop"
+if st.session_state.get("force_clean_top", False):
+    run = False
 if use_current_price:
     light_pickling_price = False
 label = "安値"
