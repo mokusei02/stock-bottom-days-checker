@@ -277,7 +277,18 @@ def download_prices(ticker: str, start: date, end: date) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_current_price(ticker: str) -> float:
-    prices = download_prices(ticker, date(2000, 1, 1), date.today())
+    # The daily snapshot deliberately remains fixed for rankings, but an
+    # individual search with "現在の株価" must use the quote available at the
+    # time of the search.  The latest daily candle returned by Yahoo is updated
+    # during market hours as well as after the close.
+    raw = yf.download(
+        ticker,
+        period="5d",
+        progress=False,
+        auto_adjust=False,
+        threads=False,
+    )
+    prices = normalize_prices(raw)
     if prices.empty or "Close" not in prices.columns:
         raise RuntimeError("現在の株価を取得できませんでした。")
     closes = prices["Close"].dropna()
@@ -1790,9 +1801,9 @@ if run:
                 threshold, light_pickling_days = find_light_pickling_price(
                     prices, column, target_days=30
                 )
-                current_market_price = get_latest_close(prices)
+                current_market_price = get_current_price(ticker)
             elif use_current_price:
-                threshold = get_latest_close(prices)
+                threshold = get_current_price(ticker)
             company_info = get_company_info(ticker)
             company_name = get_company_name(ticker, company_info)
         if column not in prices.columns:

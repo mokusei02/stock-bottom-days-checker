@@ -1914,9 +1914,9 @@ if run:
                 threshold, light_pickling_days = find_light_pickling_price(
                     prices, column, target_days=30
                 )
-                current_market_price = get_latest_close(prices)
+                current_market_price = get_current_price(ticker)
             elif use_current_price:
-                threshold = get_latest_close(prices)
+                threshold = get_current_price(ticker)
             company_info = get_company_info(ticker)
             company_name = get_company_name(ticker, company_info)
         if column not in prices.columns:
