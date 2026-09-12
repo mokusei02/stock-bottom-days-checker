@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,17 @@ BRANCH = "market-data"
 _last_snapshot = None
 _local_snapshot_setting = os.getenv("MARKET_STORE_LOCAL_DIR")
 LOCAL_SNAPSHOT_DIR = Path(_local_snapshot_setting) if _local_snapshot_setting else None
+
+
+def read_local_snapshot() -> tuple[str, dict]:
+    """Read the local development snapshot and derive a cache revision from it."""
+    if LOCAL_SNAPSHOT_DIR is None:
+        raise FileNotFoundError("Local snapshot is disabled")
+    content = (LOCAL_SNAPSHOT_DIR / "manifest.json").read_bytes()
+    manifest = json.loads(content)
+    if manifest.get("schema") != 1 or not manifest.get("prices"):
+        raise ValueError("Empty market snapshot")
+    return hashlib.sha256(content).hexdigest(), manifest
 
 
 def read_url(url: str) -> bytes:
@@ -34,6 +46,14 @@ def raw_url(revision: str, path: str) -> str:
 
 def get_snapshot() -> tuple[str, dict]:
     global _last_snapshot
+    if LOCAL_SNAPSHOT_DIR is not None:
+        try:
+            _last_snapshot = read_local_snapshot()
+            return _last_snapshot
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            if _last_snapshot is None:
+                raise RuntimeError("ローカル保存株価データを読み込めませんでした。") from error
+            return _last_snapshot
     try:
         pointer = json.loads(read_url(f"https://raw.githubusercontent.com/{REPOSITORY}/{BRANCH}/latest.json"))
         revision = pointer["revision"]
@@ -71,6 +91,11 @@ def read_prices(revision: str, ticker: str, manifest: dict) -> pd.DataFrame:
     entry = manifest["prices"].get(ticker)
     if entry is None:
         raise RuntimeError("この銘柄の保存データはまだ取得できていません。次回の更新をお待ちください。")
+    if LOCAL_SNAPSHOT_DIR is not None:
+        try:
+            return parse_prices((LOCAL_SNAPSHOT_DIR / entry["path"]).read_bytes())
+        except (OSError, ValueError, KeyError) as error:
+            raise RuntimeError("ローカル保存株価データの読み込みに失敗しました。") from error
     try:
         return parse_prices(read_url(raw_url(revision, entry["path"])))
     except (OSError, ValueError) as error:
@@ -86,6 +111,15 @@ def read_nikkei(revision: str, manifest: dict) -> pd.DataFrame:
     entry = manifest.get("ranking")
     if not entry:
         raise RuntimeError("ランキング用データの初回更新がまだ完了していません。")
+    if LOCAL_SNAPSHOT_DIR is not None:
+        try:
+            with zipfile.ZipFile(LOCAL_SNAPSHOT_DIR / entry["path"]) as archive:
+                frames = {name.removesuffix(".csv"): parse_prices(archive.read(name)) for name in archive.namelist()}
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
+            raise RuntimeError("ローカル保存ランキングデータの読み込みに失敗しました。") from error
+        if set(frames) != set(entry["tickers"]):
+            raise RuntimeError("ランキング用データが不完全です。")
+        return pd.concat(frames, axis=1)
     try:
         with zipfile.ZipFile(io.BytesIO(read_url(raw_url(revision, entry["path"])))) as archive:
             frames = {name.removesuffix(".csv"): parse_prices(archive.read(name)) for name in archive.namelist()}

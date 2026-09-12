@@ -16,8 +16,17 @@ class UpdateTests(unittest.TestCase):
         with patch.object(updater, "ranking_codes", return_value=["7201", "7203"]), \
              patch.object(updater.pd, "read_csv", return_value=pd.DataFrame({"code": []})), \
              patch.object(updater.yf, "set_tz_cache_location"), \
+             patch.object(updater, "is_japan_business_day", return_value=True), \
              patch.object(updater, "fetch", side_effect=lambda ticker, end: results[ticker]):
             updater.update(output, only_nikkei=True)
+
+    def test_japanese_holiday_skips_all_downloads(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(updater, "is_japan_business_day", return_value=False), \
+             patch.object(updater, "fetch") as fetch:
+            updater.update(Path(temporary), only_nikkei=True)
+            fetch.assert_not_called()
+            self.assertFalse((Path(temporary) / "manifest.json").exists())
 
     def test_rate_limit_keeps_all_saved_files_unchanged(self):
         with tempfile.TemporaryDirectory() as temporary:

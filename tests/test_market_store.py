@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import threading
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 import zipfile
@@ -45,6 +46,34 @@ class StoreTests(unittest.TestCase):
                     store.get_snapshot()
         finally:
             store._last_snapshot = previous
+
+    def test_local_mode_prefers_updated_local_snapshot(self):
+        previous_dir = store.LOCAL_SNAPSHOT_DIR
+        previous_snapshot = store._last_snapshot
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory)
+                manifest = {
+                    "schema": 1,
+                    "prices": {"7201.T": {"path": "prices/7201.T.csv"}},
+                    "ranking": {"path": "nikkei225.zip", "tickers": ["7201.T"], "as_of": "2026-09-11"},
+                }
+                (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+                (folder / "prices").mkdir()
+                (folder / "prices" / "7201.T.csv").write_bytes(CSV)
+                with zipfile.ZipFile(folder / "nikkei225.zip", "w") as archive:
+                    archive.writestr("7201.T.csv", CSV)
+                store.LOCAL_SNAPSHOT_DIR = folder
+                store._last_snapshot = None
+                revision, loaded = store.get_snapshot()
+                self.assertEqual(len(revision), 64)
+                self.assertEqual(loaded["ranking"]["as_of"], "2026-09-11")
+                with patch.object(store, "read_url", side_effect=AssertionError("remote read")):
+                    self.assertEqual(len(store.read_prices(revision, "7201.T", loaded)), 2)
+                    self.assertEqual(len(store.read_nikkei(revision, loaded)), 2)
+        finally:
+            store.LOCAL_SNAPSHOT_DIR = previous_dir
+            store._last_snapshot = previous_snapshot
 
     def test_incomplete_ranking_bundle_is_rejected(self):
         buf = io.BytesIO()

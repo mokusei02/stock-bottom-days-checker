@@ -4,8 +4,9 @@ The Streamlit process reads validated snapshots from the public `market-data`
 branch of this same repository. No credentials, cookies, or search histories are
 included in that branch. It does not call Yahoo Finance for web searches.
 
-`.github/workflows/market-data.yml` runs on weekdays at 07:05 UTC (16:05 JST),
-or on manual dispatch. GitHub scheduling is best-effort and can run late.
+`.github/workflows/market-data.yml` runs on weekdays at 07:00 UTC (16:00 JST),
+or on manual dispatch. The updater skips Japanese public holidays. GitHub
+scheduling is best-effort and can run late.
 The first scheduled job reads all symbols in `companies.csv`; unavailable symbols
 keep their previous data. Full histories from 2000 are downloaded so corporate
 action adjustments do not leave incompatible old/new price scales.

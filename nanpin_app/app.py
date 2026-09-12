@@ -18,6 +18,7 @@ import streamlit.components.v1 as components
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 import yfinance as yf
 import market_store
+from market_calendar import latest_refresh_date
 from nanpin_plan import build_nanpin_plan
 
 # Keep this copy's Yahoo Finance cache independent of the original app.
@@ -687,14 +688,8 @@ def calculate_light_pickling_rankings(
 
 
 def latest_ranking_refresh_date(now: datetime | None = None) -> date:
-    """Return the latest weekday whose 16:00 JST refresh time has passed."""
-    current = now.astimezone(JAPAN_TIMEZONE) if now else datetime.now(JAPAN_TIMEZONE)
-    refresh_date = current.date()
-    if current.weekday() < 5 and current.time() < RANKING_REFRESH_TIME:
-        refresh_date -= timedelta(days=1)
-    while refresh_date.weekday() >= 5:
-        refresh_date -= timedelta(days=1)
-    return refresh_date
+    """Return the latest Japanese business-day refresh date."""
+    return latest_refresh_date(now)
 
 
 @st.cache_resource
@@ -722,18 +717,24 @@ def save_ranking_cache(entries: dict) -> None:
 def get_light_pickling_ranking(
     start_date: date, requested_end_date: date
 ) -> tuple[pd.DataFrame, pd.DataFrame, date, bool]:
-    """Refresh once after 16:00 JST on weekdays and reuse the saved ranking."""
+    """Reuse the saved ranking refreshed after 16:00 JST on business days."""
     revision, manifest = saved_snapshot()
     if not manifest.get("ranking"):
         raise RuntimeError("ランキング用データの初回更新がまだ完了していません。")
     refresh_date = date.fromisoformat(manifest["ranking"]["as_of"])
     effective_end_date = min(requested_end_date, refresh_date)
-    cache_key = f"snapshot-v1:{revision}:{start_date.isoformat()}:{effective_end_date.isoformat()}"
+    # The first request for a saved market date creates the ranking.  Every
+    # visitor then receives that exact result until the next 16:00 business-day
+    # snapshot becomes available, even if the data branch is republished.
+    cache_key = f"shared-v2:{refresh_date.isoformat()}:{start_date.isoformat()}"
     state = ranking_cache_state()
 
     with state["lock"]:
         if state["entries"] is None:
             state["entries"] = load_ranking_cache()
+        elif cache_key not in state["entries"]:
+            # The sister app may have created today's shared result.
+            state["entries"].update(load_ranking_cache())
         cached = state["entries"].get(cache_key)
         if (
             isinstance(cached, dict)
@@ -764,6 +765,7 @@ def get_light_pickling_ranking(
             )
         state["entries"][cache_key] = {
             "updated_at": datetime.now(JAPAN_TIMEZONE).isoformat(timespec="seconds"),
+            "source_revision": revision,
             "refresh_date": refresh_date.isoformat(),
             "start_date": start_date.isoformat(),
             "end_date": effective_end_date.isoformat(),

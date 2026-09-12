@@ -22,6 +22,7 @@ from yfinance.exceptions import YFRateLimitError
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from market_store import parse_prices
+from market_calendar import is_japan_business_day, latest_refresh_date
 
 JST = timezone(timedelta(hours=9))
 
@@ -54,11 +55,10 @@ def fetch(ticker, end):
 
 def update(output: Path, only_nikkei=False, workers=2):
     now = datetime.now(JST)
-    day = now.date()
-    if now.time() < time(16):
-        day -= timedelta(days=1)
-    while day.weekday() >= 5:
-        day -= timedelta(days=1)
+    if not is_japan_business_day(now.date()):
+        print("Skipped: Saturday, Sunday, or Japanese public holiday", flush=True)
+        return
+    day = latest_refresh_date(now)
     end = (day + timedelta(days=1)).isoformat()
     output.mkdir(parents=True, exist_ok=True)
     manifest_path = output / "manifest.json"

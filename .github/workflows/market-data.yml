@@ -1,8 +1,8 @@
 name: Daily saved market prices
 on:
   schedule:
-    # 16:05 Japan time, weekdays. GitHub may delay scheduled jobs.
-    - cron: '5 7 * * 1-5'
+    # 16:00 Japan time, weekdays. The updater also skips Japanese holidays.
+    - cron: '0 7 * * 1-5'
   workflow_dispatch:
   push:
     branches: [main]
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install 'pandas>=2.2,<3' 'yfinance>=0.2.54,<1'
+      - run: pip install -r app/requirements.txt
       - name: Collect and validate full histories
         run: python -u app/scripts/update_market_data.py --output data --workers 2
       - name: Publish only successful snapshots
