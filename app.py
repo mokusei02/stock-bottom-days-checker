@@ -1836,7 +1836,7 @@ if active_ranking_view in {"mobile", "desktop"}:
                 "現在の株価で購入した場合、<br>"
                 f"{format_month_ja(ranking_start_date)}～現在の塩漬け期間が"
                 "短い順に並べています。<br>"
-                "過去3年以前の株価が今の株価を上回らなかった場合、"
+                "過去3年以前の株価が今の株価を一度も上回らなかった場合、"
                 "現在高値圏の可能性があるためランキングから除外します。"
                 "</div>",
                 unsafe_allow_html=True,
@@ -2507,10 +2507,7 @@ if run:
             '<div class="review-card" style="margin:36px 16px 0;padding:18px 20px;border:1px solid #CBD5E1;'
             'border-radius:10px;background:#F8FAFC;line-height:1.8;font-size:18px;">'
             '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">'
-            '<span class="review-card-title" style="font-size:22px;font-weight:700;">総評</span>'
-            f'<span class="review-card-grade" style="display:inline-block;padding:1px 12px;border-radius:999px;'
-            f'background:{grade_color};color:#FFFFFF;font-size:17px;font-weight:700;">'
-            f"{grade_label}</span></div>"
+            '<span class="review-card-title" style="font-size:22px;font-weight:700;">総評</span></div>'
             f"<div>{purchase_context}</div>"
             f'<div class="review-statistics-line">{streak_summary}</div>'
             f"{recent_assessment_html}"

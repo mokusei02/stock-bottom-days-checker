@@ -1432,8 +1432,13 @@ if ranking_code:
             st.session_state[f"{prefix}_company"] = ranking_company
             st.session_state[f"{prefix}_investment_budget_man_yen"] = 100
             st.session_state[f"{prefix}_averaging_down_count"] = 3
-            st.session_state[f"{prefix}_bottom_reference_years"] = 5
+            st.session_state[f"{prefix}_bottom_reference_years"] = (
+                20 if IS_AFTER365_PAGE else 5
+            )
             st.session_state[f"{prefix}_maximum_bottom_gap_percent"] = 10
+            if IS_AFTER365_PAGE:
+                st.session_state[f"{prefix}_after365_use_mean_statistics"] = True
+                st.session_state[f"{prefix}_after365_use_median_statistics"] = False
         st.session_state.pop("nanpin_force_clean_top", None)
         st.session_state["ranking_company_run"] = True
     del st.query_params["ranking_code"]
@@ -1455,8 +1460,13 @@ if linked_company_code:
             st.session_state[f"{prefix}_company"] = linked_company
             st.session_state[f"{prefix}_investment_budget_man_yen"] = 100
             st.session_state[f"{prefix}_averaging_down_count"] = 3
-            st.session_state[f"{prefix}_bottom_reference_years"] = 5
+            st.session_state[f"{prefix}_bottom_reference_years"] = (
+                20 if IS_AFTER365_PAGE else 5
+            )
             st.session_state[f"{prefix}_maximum_bottom_gap_percent"] = 10
+            if IS_AFTER365_PAGE:
+                st.session_state[f"{prefix}_after365_use_mean_statistics"] = True
+                st.session_state[f"{prefix}_after365_use_median_statistics"] = False
         st.session_state.pop("nanpin_force_clean_top", None)
         st.session_state["ranking_company_run"] = True
     if "app_code" in st.query_params:
@@ -2477,7 +2487,7 @@ if active_ranking_view in {"mobile", "desktop"}:
                 "現在の株価で購入した場合、<br>"
                 f"{format_month_ja(ranking_start_date)}～現在の塩漬け期間が"
                 "短い順に並べています。<br>"
-                "過去3年以前の株価が今の株価を上回らなかった場合、"
+                "過去3年以前の株価が今の株価を一度も上回らなかった場合、"
                 "現在高値圏の可能性があるためランキングから除外します。"
                 "</div>",
                 unsafe_allow_html=True,
@@ -4923,10 +4933,6 @@ if run:
                         average_projection_lines
                         + average_projection_mountain
                         + average_projection_question
-                        + average_projection_deadline_backgrounds
-                        + average_projection_deadline_labels
-                        + average_projection_value_backgrounds
-                        + average_projection_value_labels
                         + current_low_marker_line
                         + current_low_marker_label_background
                         + current_low_marker_label
@@ -4936,6 +4942,12 @@ if run:
                         + current_marker_line
                         + current_marker_label_background
                         + current_marker_label
+                        # Keep both forecast text rows above every vertical marker.
+                        # Their white outline masks any rule that reaches the text.
+                        + average_projection_deadline_backgrounds
+                        + average_projection_deadline_labels
+                        + average_projection_value_backgrounds
+                        + average_projection_value_labels
                     )
                 recent_display_chart = recent_display_chart.properties(height=320)
                 recent_period_title = (
