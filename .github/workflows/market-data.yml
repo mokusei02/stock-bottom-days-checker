@@ -1,8 +1,8 @@
 name: Daily saved market prices
 on:
   schedule:
-    # 16:00 Japan time, weekdays. The updater also skips Japanese holidays.
-    - cron: '0 7 * * 1-5'
+    # 16:00 Japan time, every day. Non-trading days reuse the latest market day.
+    - cron: '0 7 * * *'
   workflow_dispatch:
   push:
     branches: [main]

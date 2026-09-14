@@ -16,17 +16,23 @@ class UpdateTests(unittest.TestCase):
         with patch.object(updater, "ranking_codes", return_value=["7201", "7203"]), \
              patch.object(updater.pd, "read_csv", return_value=pd.DataFrame({"code": []})), \
              patch.object(updater.yf, "set_tz_cache_location"), \
-             patch.object(updater, "is_japan_business_day", return_value=True), \
              patch.object(updater, "fetch", side_effect=lambda ticker, end: results[ticker]):
             updater.update(output, only_nikkei=True)
 
-    def test_japanese_holiday_skips_all_downloads(self):
+    def test_non_trading_day_uses_latest_market_day(self):
         with tempfile.TemporaryDirectory() as temporary, \
-             patch.object(updater, "is_japan_business_day", return_value=False), \
-             patch.object(updater, "fetch") as fetch:
+             patch.object(updater, "latest_refresh_date") as refresh_date, \
+             patch.object(updater, "ranking_codes", return_value=["7201"]), \
+             patch.object(updater.pd, "read_csv", return_value=pd.DataFrame({"code": []})), \
+             patch.object(updater.yf, "set_tz_cache_location"), \
+             patch.object(updater, "fetch", return_value=("7201.T", CSV, "2026-09-11", None)) as fetch:
+            refresh_date.return_value = pd.Timestamp("2026-09-11").date()
             updater.update(Path(temporary), only_nikkei=True)
-            fetch.assert_not_called()
-            self.assertFalse((Path(temporary) / "manifest.json").exists())
+            fetch.assert_called_once_with("7201.T", "2026-09-12")
+            manifest = json.loads(
+                (Path(temporary) / "manifest.json").read_text()
+            )
+            self.assertEqual(manifest["ranking"]["as_of"], "2026-09-11")
 
     def test_rate_limit_keeps_all_saved_files_unchanged(self):
         with tempfile.TemporaryDirectory() as temporary:

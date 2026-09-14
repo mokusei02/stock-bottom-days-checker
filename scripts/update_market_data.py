@@ -22,7 +22,7 @@ from yfinance.exceptions import YFRateLimitError
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from market_store import parse_prices
-from market_calendar import is_japan_business_day, latest_refresh_date
+from market_calendar import latest_refresh_date
 
 JST = timezone(timedelta(hours=9))
 
@@ -55,9 +55,8 @@ def fetch(ticker, end):
 
 def update(output: Path, only_nikkei=False, workers=2):
     now = datetime.now(JST)
-    if not is_japan_business_day(now.date()):
-        print("Skipped: Saturday, Sunday, or Japanese public holiday", flush=True)
-        return
+    # Run every calendar day. On weekends and Japanese market holidays,
+    # latest_refresh_date() safely targets the latest completed trading day.
     day = latest_refresh_date(now)
     end = (day + timedelta(days=1)).isoformat()
     output.mkdir(parents=True, exist_ok=True)
