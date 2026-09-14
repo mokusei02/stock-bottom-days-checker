@@ -18,11 +18,18 @@ import streamlit.components.v1 as components
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 import yfinance as yf
 import market_store
+from after365_analysis import (
+    build_after365_summary,
+    calculate_after365_average,
+)
 from market_calendar import latest_refresh_date
 from nanpin_plan import build_nanpin_plan
 
 # Keep this copy's Yahoo Finance cache independent of the original app.
 yf.set_tz_cache_location(str(Path(__file__).with_name(".yfinance-cache")))
+
+APP_VARIANT = str(globals().get("APP_VARIANT", "nanpin"))
+IS_AFTER365_PAGE = APP_VARIANT == "after365"
 
 
 LABELS = {"Close": "終値", "Low": "安値", "Open": "始値", "High": "高値"}
@@ -82,6 +89,60 @@ def format_month_ja(value) -> str:
     return f"{timestamp.year}年{timestamp.month}月"
 
 
+def mobile_chart_spec(chart, *, hide_y_axis_title: bool = False) -> dict:
+    """Return a mobile Vega-Lite spec with typography reduced by 30%."""
+    spec = chart.to_dict()
+
+    def reduce_typography(node) -> None:
+        if isinstance(node, list):
+            for item in node:
+                reduce_typography(item)
+            return
+        if not isinstance(node, dict):
+            return
+
+        mark = node.get("mark")
+        if isinstance(mark, dict) and mark.get("type") == "text":
+            font_size = mark.get("fontSize")
+            if isinstance(font_size, (int, float)):
+                mark["fontSize"] = max(7, round(font_size * 0.7))
+            stroke_width = mark.get("strokeWidth")
+            if isinstance(stroke_width, (int, float)):
+                mark["strokeWidth"] = max(1, round(stroke_width * 0.7))
+
+        encoding = node.get("encoding")
+        if isinstance(encoding, dict):
+            for channel_name in ("x", "y"):
+                channel = encoding.get(channel_name)
+                if not isinstance(channel, dict):
+                    continue
+                axis = channel.get("axis")
+                if isinstance(axis, dict):
+                    current_label_size = axis.get("labelFontSize", 10)
+                    if isinstance(current_label_size, (int, float)):
+                        axis["labelFontSize"] = max(
+                            7, round(current_label_size * 0.7)
+                        )
+                    axis["titleFontSize"] = 8
+                    if channel_name == "x" and axis.get("format") == "%m月":
+                        axis["tickCount"] = {"interval": "month", "step": 2}
+                    elif channel_name == "x" and axis.get("format") in {
+                        "%y年",
+                        "%Y年",
+                    }:
+                        axis["tickCount"] = {"interval": "year", "step": 4}
+                if hide_y_axis_title and channel_name == "y":
+                    channel["title"] = None
+                    if isinstance(axis, dict):
+                        axis["title"] = None
+
+        for value in node.values():
+            reduce_typography(value)
+
+    reduce_typography(spec)
+    return spec
+
+
 def format_price_with_change(value, base_price: float) -> str:
     if pd.isna(value):
         return "—"
@@ -118,6 +179,100 @@ def format_nanpin_price(average_price: float, investment_price: float) -> str:
     change = calculate_nanpin_gap_percent(average_price, investment_price)
     sign = "-" if change < 0 else "+" if change > 0 else ""
     return f"{price:,}円（{sign}{abs(change)}％）"
+
+
+def format_after365_price(
+    value: float,
+    lowest_value: float,
+    color_class: str,
+) -> str:
+    """Show the gain from the yearly low below an after-365 price."""
+    if pd.isna(value) or pd.isna(lowest_value):
+        return "—"
+    difference = float(value) - float(lowest_value)
+    percent = difference / float(lowest_value) * 100 if lowest_value else 0.0
+    difference_sign = "+" if difference >= 0 else "-"
+    percent_sign = "+" if percent >= 0 else "-"
+    return (
+        f'<span class="after365-change {color_class}">'
+        f"{difference_sign}{format_yen(abs(difference))}"
+        f"（{percent_sign}{abs(percent):.0f}％）"
+        "</span>"
+    )
+
+
+def format_after365_percent(value: float, lowest_value: float, color_class: str) -> str:
+    """Show only the percentage difference for an after-365 summary value."""
+    if pd.isna(value) or pd.isna(lowest_value):
+        return "—"
+    difference = float(value) - float(lowest_value)
+    percent = difference / float(lowest_value) * 100 if lowest_value else 0.0
+    percent_sign = "+" if percent >= 0 else "-"
+    return (
+        f'<span class="after365-average-percent {color_class}">'
+        f"（{percent_sign}{abs(percent):.0f}％）</span>"
+    )
+
+
+def build_after365_event_details(
+    prices: pd.DataFrame, start_date: date, end_date: date
+) -> dict[str, dict[str, tuple[pd.Timestamp, float] | None]]:
+    """Return the date and absolute price behind each annual statistic."""
+    frame = prices.sort_index()
+    details: dict[str, dict[str, tuple[pd.Timestamp, float] | None]] = {}
+    for year in range(start_date.year, end_date.year + 1):
+        year_start = max(pd.Timestamp(start_date), pd.Timestamp(year, 1, 1))
+        year_end = min(pd.Timestamp(end_date), pd.Timestamp(year, 12, 31))
+        yearly_lows = frame.loc[year_start:year_end, "Low"].dropna()
+        if yearly_lows.empty:
+            continue
+        lowest_date = pd.Timestamp(yearly_lows.idxmin())
+        following = frame.loc[
+            (frame.index > lowest_date)
+            & (frame.index <= lowest_date + pd.Timedelta(days=365))
+        ]
+        following_highs = following["High"].dropna()
+        following_lows = frame.loc[
+            (frame.index >= lowest_date)
+            & (frame.index <= lowest_date + pd.Timedelta(days=365)),
+            "Low",
+        ].dropna()
+        details[f"{year}年"] = {
+            "lowest": (lowest_date, float(yearly_lows.loc[lowest_date])),
+            "highest": (
+                (
+                    pd.Timestamp(following_highs.idxmax()),
+                    float(following_highs.max()),
+                )
+                if not following_highs.empty
+                else None
+            ),
+            "following_lowest": (
+                (
+                    pd.Timestamp(following_lows.idxmin()),
+                    float(following_lows.min()),
+                )
+                if not following_lows.empty
+                else None
+            ),
+        }
+    return details
+
+
+def format_after365_event_detail(
+    detail: tuple[pd.Timestamp, float] | None,
+) -> str:
+    """Format a compact date and absolute price below an annual result."""
+    if detail is None:
+        return ""
+    event_date, event_price = detail
+    date_text = (
+        f"{event_date.year}年{event_date.month}月{event_date.day}日"
+    )
+    return (
+        '<span class="after365-event-detail">'
+        f"{date_text} {format_yen(event_price)}</span>"
+    )
 
 
 def format_yen(value: float) -> str:
@@ -281,24 +436,43 @@ def find_light_pickling_price(
     return best_price, best_days
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def download_prices(ticker: str, start: date, end: date) -> pd.DataFrame:
-    # yfinance's end is exclusive.
-    raw = yf.download(ticker, start=start, end=end + pd.Timedelta(days=1), progress=False, auto_adjust=False)
-    if raw.empty:
-        raise RuntimeError("株価データを取得できませんでした。")
-    return normalize_prices(raw)
+    revision, manifest = saved_snapshot()
+    entry = manifest["prices"].get(ticker)
+    if entry is None:
+        raise RuntimeError(
+            "この銘柄の保存データはまだ取得できていません。次回の更新をお待ちください。"
+        )
+    prices = saved_price_frame(revision, ticker, entry)
+    prices = prices.loc[pd.Timestamp(start):pd.Timestamp(end)]
+    if prices.empty:
+        raise RuntimeError("指定期間の保存株価データがありません。")
+    return prices
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_current_price(ticker: str) -> float:
-    raw = yf.download(
-        ticker, period="5d", progress=False, auto_adjust=False
-    )
-    prices = normalize_prices(raw)
-    if prices.empty or "Close" not in prices.columns:
+    try:
+        raw = yf.download(
+            ticker,
+            period="5d",
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+        )
+        prices = normalize_prices(raw)
+        closes = prices["Close"].dropna() if "Close" in prices.columns else pd.Series()
+        if not closes.empty:
+            return float(closes.iloc[-1])
+    except Exception:
+        pass
+
+    revision, manifest = saved_snapshot()
+    entry = manifest["prices"].get(ticker)
+    if entry is None:
         raise RuntimeError("現在の株価を取得できませんでした。")
-    closes = prices["Close"].dropna()
+    saved_prices = saved_price_frame(revision, ticker, entry)
+    closes = saved_prices["Close"].dropna()
     if closes.empty:
         raise RuntimeError("現在の株価を取得できませんでした。")
     return float(closes.iloc[-1])
@@ -420,17 +594,21 @@ def render_app_banners(
         )
     nanpin_query = {"top": "1"}
     salt_query = {"top": "1"}
+    after365_query = {"top": "1"}
     if carry_conditions and security_code:
         nanpin_query["app_code"] = security_code
         salt_query["app_code"] = security_code
+        after365_query["app_code"] = security_code
     nanpin_href = "/nanpin?" + urlencode(nanpin_query)
     salt_href = "/?" + urlencode(salt_query)
+    after365_href = "/after365?" + urlencode(after365_query)
 
     render_index = getattr(render_app_banners, "_render_index", 0)
     render_app_banners._render_index = render_index + 1
     grid_key = f"app_banner_grid_{render_index}"
     nanpin_key = f"app_banner_nanpin_{render_index}"
     salt_key = f"app_banner_salt_{render_index}"
+    after365_key = f"app_banner_after365_{render_index}"
     nanpin_image = base64.b64encode(
         (assets / "absolute-safe-nanpin-banner.png").read_bytes()
     ).decode("ascii")
@@ -445,14 +623,15 @@ def render_app_banners(
     st.markdown(
         f"""
         <style>
-        .st-key-{grid_key} {{ width:70%; max-width:602px; margin:1.4rem 0 1.8rem; }}
+        .st-key-{grid_key} {{ width:100%; max-width:920px; margin:1.4rem 0 1.8rem; }}
         .st-key-{grid_key} [data-testid="stHorizontalBlock"] {{ gap:1rem; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a,
         .st-key-{salt_key} [data-testid="stPageLink"] a,
         .st-key-{nanpin_key} [data-testid="stLinkButton"] a,
         .st-key-{salt_key} [data-testid="stLinkButton"] a,
         .st-key-{nanpin_key} .app-banner-anchor,
-        .st-key-{salt_key} .app-banner-anchor {{
+        .st-key-{salt_key} .app-banner-anchor,
+        .st-key-{after365_key} .app-banner-anchor {{
             display:block;
             height:66px; padding:0; overflow:hidden; background:#fff center/contain no-repeat;
             border:2px solid #AEB5BF; border-radius:.65rem; box-sizing:border-box;
@@ -467,12 +646,21 @@ def render_app_banners(
         .st-key-{salt_key} .app-banner-anchor {{
             background-image:url("data:image/png;base64,{salt_image}");
         }}
+        .st-key-{after365_key} .app-banner-anchor {{
+            display:flex; align-items:center; justify-content:center;
+            color:#2563EB; font-size:clamp(1rem, 1.45vw, 1.35rem);
+            font-weight:800; text-decoration:none; white-space:nowrap;
+            background:#FFFFFF;
+        }}
+        .st-key-{after365_key} .app-banner-anchor::before {{ content:"📅"; margin-right:.35rem; }}
+        .st-key-{after365_key} .app-banner-anchor::after {{ content:"📅"; margin-left:.35rem; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a:hover,
         .st-key-{salt_key} [data-testid="stPageLink"] a:hover,
         .st-key-{nanpin_key} [data-testid="stLinkButton"] a:hover,
         .st-key-{salt_key} [data-testid="stLinkButton"] a:hover,
         .st-key-{nanpin_key} .app-banner-anchor:hover,
-        .st-key-{salt_key} .app-banner-anchor:hover {{ border-color:#2563EB; }}
+        .st-key-{salt_key} .app-banner-anchor:hover,
+        .st-key-{after365_key} .app-banner-anchor:hover {{ border-color:#2563EB; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a [data-testid="stMarkdownContainer"],
         .st-key-{salt_key} [data-testid="stPageLink"] a [data-testid="stMarkdownContainer"],
         .st-key-{nanpin_key} [data-testid="stLinkButton"] a [data-testid="stMarkdownContainer"],
@@ -492,14 +680,15 @@ def render_app_banners(
             .st-key-{nanpin_key} [data-testid="stLinkButton"] a,
             .st-key-{salt_key} [data-testid="stLinkButton"] a,
             .st-key-{nanpin_key} .app-banner-anchor,
-            .st-key-{salt_key} .app-banner-anchor {{ height:53px; }}
+            .st-key-{salt_key} .app-banner-anchor,
+            .st-key-{after365_key} .app-banner-anchor {{ height:53px; }}
         }}
         </style>
         """,
         unsafe_allow_html=True,
     )
     with st.container(key=grid_key):
-        nanpin_column, salt_column = st.columns(2)
+        nanpin_column, salt_column, after365_column = st.columns(3)
         with nanpin_column:
             with st.container(key=nanpin_key):
                 if standalone_nanpin:
@@ -532,6 +721,13 @@ def render_app_banners(
                         'target="_self" aria-label="塩漬け日数チェッカー"></a>',
                         unsafe_allow_html=True,
                     )
+        with after365_column:
+            with st.container(key=after365_key):
+                st.markdown(
+                    f'<a class="app-banner-anchor after365-banner-anchor" href="{after365_href}" '
+                    'target="_self" aria-label="最安値から365日後">最安値から365日後…</a>',
+                    unsafe_allow_html=True,
+                )
 
 
 def render_bottom_price_form(threshold: float) -> None:
@@ -571,6 +767,11 @@ def load_company_options() -> list[str]:
 @st.cache_data(ttl=300, show_spinner=False)
 def saved_snapshot():
     return market_store.get_snapshot()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def saved_price_frame(revision, ticker, entry):
+    return market_store.read_prices(revision, ticker, {"prices": {ticker: entry}})
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -909,6 +1110,70 @@ def render_results_table(
     )
 
 
+def set_after365_statistics_mode(key_prefix: str, mode: str) -> None:
+    """Keep the mean/median checkboxes mutually exclusive."""
+    st.session_state[f"{key_prefix}_after365_use_mean_statistics"] = mode == "mean"
+    st.session_state[f"{key_prefix}_after365_use_median_statistics"] = (
+        mode == "median"
+    )
+
+
+def render_after365_summary(
+    summary_table, sample_count: int, use_mean_statistics: bool
+) -> None:
+    """Render the after-365 average summary as a standalone table."""
+    summary_values = summary_table.data.iloc[0].tolist()
+    summary_html = (
+        '<table class="after365-summary-table"><tbody>'
+        '<tr><td class="after365-summary-copy" colspan="2">'
+        f"{summary_values[0]}</td></tr><tr>"
+        '<td class="after365-summary-high">'
+        f"{summary_values[2]}</td>"
+        '<td class="after365-summary-low">'
+        f"{summary_values[3]}</td>"
+        "</tr></tbody></table>"
+    )
+    st.markdown(
+        '<div class="results-table-scroll after365-combined-tables '
+        'after365-summary-only">'
+        f"{summary_html}"
+        '<div class="after365-sample-note">'
+        f'<div class="after365-sample-count">'
+        f'トータル統計年数{sample_count}年</div>'
+        '<div class="after365-sample-help">'
+        '<strong>※統計回数が多いほど確率は正確になります。'
+        + (
+            '統計は平均値となります。'
+            if use_mean_statistics
+            else '統計は平均ではなく中央値となります。'
+        )
+        + '</strong>'
+        "</div></div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_after365_tables(summary_table, annual_table) -> None:
+    """Render the summary before the annual table's column headings."""
+    summary_values = summary_table.data.iloc[0].tolist()
+    summary_html = (
+        '<table class="after365-summary-table"><tbody><tr>'
+        '<td class="after365-summary-copy" colspan="2">'
+        f"{summary_values[0]}</td>"
+        '<td class="after365-summary-high">'
+        f"{summary_values[2]}</td>"
+        '<td class="after365-summary-low">'
+        f"{summary_values[3]}</td>"
+        "</tr></tbody></table>"
+    )
+    annual_html = annual_table.hide(axis="index").to_html()
+    st.markdown(
+        '<div class="results-table-scroll after365-combined-tables">'
+        f"{summary_html}{annual_html}</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def select_price_mode(key_prefix: str, selected_mode: str) -> None:
     selected_key = f"{key_prefix}_{selected_mode}"
     if not st.session_state.get(selected_key, False):
@@ -930,6 +1195,7 @@ def request_gap_recalculation(key_prefix: str) -> None:
 def render_search_controls(
     key_prefix: str,
     show_end_date: bool = True,
+    default_bottom_reference_years: int = 5,
 ):
     company_options = load_company_options()
     default_index = next(
@@ -952,43 +1218,78 @@ def render_search_controls(
     threshold = 320
     use_current_price = True
     light_pickling_price = False
-    st.number_input(
-        "投資資金（万円）",
-        min_value=1,
-        value=100,
-        step=1,
-        placeholder="金額を入力",
-        key=f"{key_prefix}_investment_budget_man_yen",
-    )
-    st.selectbox(
-        "ナンピン回数",
-        options=list(range(2, 11)),
-        index=1,
-        format_func=lambda count: f"{count}回",
-        key=f"{key_prefix}_averaging_down_count",
-    )
+    if IS_AFTER365_PAGE:
+        st.session_state[f"{key_prefix}_investment_budget_man_yen"] = 100
+        st.session_state[f"{key_prefix}_averaging_down_count"] = 3
+        st.session_state[f"{key_prefix}_maximum_bottom_gap_percent"] = 10
+    else:
+        st.number_input(
+            "投資資金（万円）",
+            min_value=1,
+            value=100,
+            step=1,
+            placeholder="金額を入力",
+            key=f"{key_prefix}_investment_budget_man_yen",
+        )
+        st.selectbox(
+            "ナンピン回数",
+            options=list(range(2, 11)),
+            index=1,
+            format_func=lambda count: f"{count}回",
+            key=f"{key_prefix}_averaging_down_count",
+        )
     bottom_reference_years = st.selectbox(
-        "底値基準",
+        "年数" if IS_AFTER365_PAGE else "底値基準",
         options=list(range(1, 21)),
-        index=4,
-        format_func=lambda years: f"{years}年前",
+        index=default_bottom_reference_years - 1,
+        format_func=(
+            (lambda years: f"{years}年")
+            if IS_AFTER365_PAGE
+            else (lambda years: f"{years}年前")
+        ),
         key=f"{key_prefix}_bottom_reference_years",
     )
-    st.markdown(
-        '<div class="nanpin-gap-label">最終ナンピンで<br>'
-        "底値から離されたくない％は</div>",
-        unsafe_allow_html=True,
-    )
-    st.selectbox(
-        "最終ナンピンで底値から離されたくない％は",
-        options=[5, 10, 20, 30],
-        index=1,
-        format_func=lambda percent: f"{percent}％",
-        key=f"{key_prefix}_maximum_bottom_gap_percent",
-        on_change=request_gap_recalculation,
-        args=(key_prefix,),
-        label_visibility="collapsed",
-    )
+    if IS_AFTER365_PAGE:
+        mean_key = f"{key_prefix}_after365_use_mean_statistics"
+        median_key = f"{key_prefix}_after365_use_median_statistics"
+        if mean_key not in st.session_state:
+            st.session_state[mean_key] = True
+        if median_key not in st.session_state:
+            st.session_state[median_key] = False
+        if not (st.session_state[mean_key] or st.session_state[median_key]):
+            st.session_state[mean_key] = True
+        with st.container(key=f"{key_prefix}_after365_stat_method_control"):
+            mean_column, median_column = st.columns(2)
+            with mean_column:
+                st.checkbox(
+                    "平均値",
+                    key=mean_key,
+                    on_change=set_after365_statistics_mode,
+                    args=(key_prefix, "mean"),
+                )
+            with median_column:
+                st.checkbox(
+                    "中央値",
+                    key=median_key,
+                    on_change=set_after365_statistics_mode,
+                    args=(key_prefix, "median"),
+                )
+    if not IS_AFTER365_PAGE:
+        st.markdown(
+            '<div class="nanpin-gap-label">最終ナンピンで<br>'
+            "底値から離されたくない％は</div>",
+            unsafe_allow_html=True,
+        )
+        st.selectbox(
+            "最終ナンピンで底値から離されたくない％は",
+            options=[5, 10, 20, 30],
+            index=1,
+            format_func=lambda percent: f"{percent}％",
+            key=f"{key_prefix}_maximum_bottom_gap_percent",
+            on_change=request_gap_recalculation,
+            args=(key_prefix,),
+            label_visibility="collapsed",
+        )
     end_date = (
         st.date_input("終了日", value=date.today(), key=f"{key_prefix}_end")
         if show_end_date
@@ -1062,7 +1363,11 @@ def activate_ranking_view(key_prefix: str) -> None:
     st.session_state["ranking_start_year"] = 2015
 
 
-st.set_page_config(page_title="絶対安全ナンピン君", page_icon="📉", layout="wide")
+st.set_page_config(
+    page_title="最安値から365日後…" if IS_AFTER365_PAGE else "絶対安全ナンピン君",
+    page_icon="📅" if IS_AFTER365_PAGE else "📉",
+    layout="wide",
+)
 
 # A banner always opens a clean top page. Streamlit keeps session state and the
 # browser's scroll position while moving between pages, so reset both.
@@ -1189,6 +1494,69 @@ components.html(
     """,
     height=0,
 )
+components.html(
+    """
+    <script>
+    (() => {
+        const page = window.parent;
+        if (!['127.0.0.1', 'localhost'].includes(page.location.hostname)) return;
+        const controlId = 'local-view-switcher';
+        let control = page.document.getElementById(controlId);
+        if (control) {
+            control.style.display = 'flex';
+            return;
+        }
+        control = page.document.createElement('div');
+        control.id = controlId;
+        control.innerHTML = `
+            <span>表示確認（初期：PC版）</span>
+            <button type="button" data-width="1366" data-height="850" data-name="desktopPreview">PC版</button>
+            <button type="button" data-width="390" data-height="850" data-name="mobilePreview">スマホ版</button>
+        `;
+        Object.assign(control.style, {
+            position: 'fixed', right: '16px', bottom: '58px', zIndex: '1002',
+            display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 8px',
+            border: '1px solid #CBD5E1', borderRadius: '12px',
+            background: 'rgba(255,255,255,0.96)', boxShadow: '0 8px 24px rgba(15,23,42,0.14)',
+            color: '#334155', fontFamily: '"Yu Gothic", sans-serif', fontSize: '12px',
+            fontWeight: '700', backdropFilter: 'blur(8px)'
+        });
+        for (const button of control.querySelectorAll('button')) {
+            Object.assign(button.style, {
+                border: '0', borderRadius: '8px', padding: '7px 10px',
+                background: button.dataset.name === 'desktopPreview' ? '#0F766E' : '#334155',
+                color: '#FFFFFF', fontSize: '12px', fontWeight: '700', cursor: 'pointer'
+            });
+            button.addEventListener('click', () => {
+                const preview = page.open(
+                    page.location.href,
+                    button.dataset.name,
+                    `popup=yes,width=${button.dataset.width},height=${button.dataset.height},resizable=yes,scrollbars=yes`
+                );
+                if (preview) preview.focus();
+            });
+        }
+        page.document.body.appendChild(control);
+    })();
+    </script>
+    """,
+    height=0,
+)
+page_background_color = (
+    "#F8FBFF" if IS_AFTER365_PAGE else "#FFFCF8"
+)
+st.markdown(
+    f"""
+    <style>
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    .stMainBlockContainer {{
+        background-color: {page_background_color};
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 st.markdown(
     """
     <style>
@@ -1202,6 +1570,7 @@ st.markdown(
     .st-key-mobile_results_table { display: none; }
     .st-key-mobile_search_history { display: none; }
     .st-key-mobile_full_period_graph { display: none; }
+    .st-key-mobile_recent_period_graph { display: none; }
     .recent-period-short { display: none; }
     .recent-assessment-desktop { display: none; }
     .recent-assessment-mobile { display: block; }
@@ -1209,9 +1578,11 @@ st.markdown(
     .review-card-note { display: none; }
     .st-key-nanpin_indicator_card {
         margin: 36px 16px 0;
+        background: #FFFFFF;
+        border-radius: 10px;
     }
     .st-key-nanpin_indicator_card [data-testid="stVerticalBlockBorderWrapper"] {
-        background: #F8FAFC;
+        background: #FFFFFF;
         border-color: #CBD5E1;
         border-radius: 10px;
     }
@@ -1380,7 +1751,146 @@ st.markdown(
     }
     .results-table-scroll td {
         padding: 0.55rem;
+        background: #FFFFFF !important;
         border: 1px solid #AEB5BF;
+        white-space: nowrap;
+    }
+    .after365-change {
+        display: block;
+        margin-top: 0.15rem;
+        font-size: 1em;
+        line-height: 1.25;
+    }
+    .after365-change-high { color: #2563EB; }
+    .after365-change-low { color: #DC2626; }
+    .after365-change-black { color: #111111; }
+    .after365-average-note {
+        display: block;
+        margin-top: 0.15rem;
+    }
+    .after365-average-line { display: block; }
+    .after365-current-lowest {
+        color: #2563EB;
+        font-size: 1.3em;
+        line-height: 1;
+    }
+    .after365-average-result-label {
+        display: block;
+        color: #111111;
+        margin-bottom: 0.15rem;
+        font-size: 0.65em;
+        white-space: nowrap;
+    }
+    .after365-average-result-price {
+        display: block;
+        margin-top: 0.15rem;
+        font-size: 1.3em;
+        line-height: 1.25;
+    }
+    .after365-average-prefix {
+        color: #111111;
+        font-size: 0.7em;
+        margin-right: 0.12em;
+    }
+    .after365-average-percent {
+        display: block;
+        margin-top: 0.15rem;
+        font-size: 1.3em;
+        line-height: 1.25;
+    }
+    .after365-excluded-note {
+        display: block;
+        margin-top: 0.2rem;
+        margin-left: 0;
+        font-size: 0.82em;
+        font-weight: 400;
+        line-height: 1.25;
+        white-space: normal;
+    }
+    .after365-combined-tables table {
+        width: 100% !important;
+        table-layout: fixed !important;
+    }
+    .after365-combined-tables table:first-of-type {
+        margin-bottom: 0.35rem;
+    }
+    .after365-summary-only table:first-of-type {
+        margin-bottom: 0;
+    }
+    .after365-summary-only {
+        width: min(100%, 580px) !important;
+        margin-left: 0 !important;
+        margin-right: auto !important;
+        margin-bottom: 0.35rem !important;
+        overflow-x: hidden !important;
+    }
+    .st-key-desktop_after365_stat_method_control [data-testid="stCheckbox"] p,
+    .st-key-mobile_after365_stat_method_control [data-testid="stCheckbox"] p {
+        font-weight: 700 !important;
+    }
+    .after365-summary-only .after365-summary-table td {
+        padding-top: 0.75rem !important;
+        padding-bottom: 0.75rem !important;
+    }
+    .after365-summary-only .after365-summary-table {
+        width: 100% !important;
+        min-width: 0 !important;
+        font-size: 1.2em;
+    }
+    .after365-summary-only .after365-summary-table td {
+        min-width: 0 !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+    }
+    .after365-summary-table td {
+        background-color: #FFF7ED !important;
+        border-top: 3px solid #F59E0B !important;
+        font-weight: 700 !important;
+        vertical-align: middle;
+    }
+    .after365-summary-table .after365-summary-copy {
+        background-color: #FCE3D2 !important;
+        color: #111111 !important;
+        text-align: center;
+    }
+    .after365-summary-table .after365-summary-copy .after365-average-line {
+        font-size: 1.3em;
+        line-height: 1.35;
+    }
+    .after365-summary-table .after365-summary-high {
+        color: #2563EB !important;
+        text-align: center;
+        font-size: 1.3em;
+    }
+    .after365-summary-table .after365-summary-low {
+        color: #DC2626 !important;
+        text-align: center;
+        font-size: 1.3em;
+    }
+    .after365-event-detail {
+        display: block;
+        margin-top: 0.25rem;
+        color: #475569 !important;
+        font-size: 0.72em;
+        font-weight: 600;
+        line-height: 1.2;
+        white-space: nowrap;
+    }
+    .after365-sample-note {
+        padding-top: 0.55rem;
+        background: #FFFFFF;
+        color: #111111;
+        text-align: center;
+    }
+    .after365-sample-count {
+        font-size: 1rem;
+        font-weight: 700;
+    }
+    .after365-sample-help {
+        margin-top: 0.15rem;
+        color: #64748B;
+        font-size: 0.78rem;
+        font-weight: 500;
         white-space: nowrap;
     }
     .st-key-desktop_results_table .results-table-scroll td:first-child,
@@ -1503,6 +2013,17 @@ st.markdown(
     }
     .app-title::before { content: "🫓"; transform: rotate(-12deg); }
     .app-title::after { content: "🫓"; transform: rotate(12deg); }
+    .app-title.after365-title {
+        color: #2563EB;
+        text-shadow:
+            0 3px 0 #BFDBFE,
+            2px 5px 0 rgba(30, 64, 175, 0.12);
+    }
+    .app-title.after365-title::before,
+    .app-title.after365-title::after {
+        content: "📅";
+        transform: none;
+    }
     .app-subtitle {
         width: 100%;
         max-width: 680px;
@@ -1526,6 +2047,63 @@ st.markdown(
         backdrop-filter: blur(8px);
     }
     @media (max-width: 768px) {
+        .after365-summary-only {
+            width: 100% !important;
+            max-width: 100% !important;
+            margin-right: 0 !important;
+            overflow-x: hidden !important;
+        }
+        .after365-summary-only .after365-summary-table {
+            width: 100% !important;
+            table-layout: fixed !important;
+            font-size: 0.82rem !important;
+        }
+        .after365-summary-only .after365-summary-table td {
+            overflow-wrap: normal !important;
+            word-break: keep-all !important;
+        }
+        .after365-summary-only .after365-summary-copy .after365-average-line {
+            font-size: 0.78rem !important;
+            line-height: 1.35 !important;
+            white-space: nowrap !important;
+        }
+        .after365-summary-only .after365-summary-high,
+        .after365-summary-only .after365-summary-low {
+            font-size: 0.9rem !important;
+        }
+        .after365-summary-only .after365-sample-help {
+            display: none !important;
+        }
+        .st-key-mobile_full_period_graph .full-period-title {
+            font-size: 14px !important;
+            line-height: 1.35 !important;
+            margin: 0 0 0.7rem !important;
+        }
+        .st-key-mobile_full_period_graph .full-period-exclusion-note {
+            margin: 0 0 1rem !important;
+            font-size: 9px !important;
+            line-height: 1.4 !important;
+        }
+        .st-key-mobile_recent_period_graph .recent-period-title {
+            margin-left: 0 !important;
+            margin-bottom: 1.25rem !important;
+            font-size: 14px !important;
+            line-height: 1.35 !important;
+        }
+        .st-key-mobile_full_period_graph [data-testid="stMarkdownContainer"] > div {
+            line-height: 1.25 !important;
+        }
+        .st-key-mobile_after365_stat_method_control [data-testid="stHorizontalBlock"] {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            gap: 0.75rem !important;
+        }
+        .st-key-mobile_after365_stat_method_control [data-testid="stColumn"] {
+            width: auto !important;
+            min-width: 0 !important;
+            flex: 1 1 0 !important;
+        }
         .nanpin-review-desktop { display: none; }
         .nanpin-review-mobile { display: block; }
         .st-key-nanpin_allocation_chart_desktop { display: none; }
@@ -1727,6 +2305,8 @@ st.markdown(
         .st-key-mobile_results_table { display: block; }
         .st-key-mobile_full_period_graph { display: block; }
         .st-key-desktop_full_period_graph { display: none; }
+        .st-key-mobile_recent_period_graph { display: block; }
+        .st-key-desktop_recent_period_graph { display: none; }
         .recent-period-long { display: none; }
         .recent-period-short { display: inline; }
         .recent-assessment-desktop { display: none; }
@@ -1763,14 +2343,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+page_title_text = "最安値から365日後…" if IS_AFTER365_PAGE else "絶対安全ナンピン君"
+page_title_class = "app-title after365-title" if IS_AFTER365_PAGE else "app-title"
 st.markdown(
-    '<div class="app-title" role="heading" aria-level="1">絶対安全ナンピン君</div>',
+    f'<div class="{page_title_class}" role="heading" aria-level="1">'
+    f'{page_title_text}</div>',
     unsafe_allow_html=True,
 )
 
 with st.container(key="mobile_filters"):
     st.header("検索条件")
-    mobile_values = render_search_controls("mobile", show_end_date=False)
+    mobile_values = render_search_controls(
+        "mobile",
+        show_end_date=False,
+        default_bottom_reference_years=20 if IS_AFTER365_PAGE else 5,
+    )
     if st.session_state.pop("mobile_history_run", False):
         mobile_values = (*mobile_values[:-1], True)
     if mobile_values[-1]:
@@ -1778,8 +2365,12 @@ with st.container(key="mobile_filters"):
 
 st.markdown(
     '<div class="app-subtitle">'
-    "購入する株のナンピン目安を提供します。"
-    "</div>",
+    + (
+        "<strong>今年の最安値から統計上の一年後の動きを予測します</strong>"
+        if IS_AFTER365_PAGE
+        else "購入する株のナンピン目安を提供します。"
+    )
+    + "</div>",
     unsafe_allow_html=True,
 )
 with st.container(key="mobile_ranking_controls"):
@@ -1801,7 +2392,11 @@ ranking_placeholder = st.empty()
 
 with st.sidebar:
     st.header("検索条件")
-    desktop_values = render_search_controls("desktop", show_end_date=False)
+    desktop_values = render_search_controls(
+        "desktop",
+        show_end_date=False,
+        default_bottom_reference_years=20 if IS_AFTER365_PAGE else 5,
+    )
     if st.session_state.pop("desktop_history_run", False):
         desktop_values = (*desktop_values[:-1], True)
     if desktop_values[-1]:
@@ -1910,7 +2505,14 @@ if active_ranking_view in {"mobile", "desktop"}:
             st.error(f"ランキングを作成できませんでした: {error}")
     st.stop()
 
-if not mobile_values[-1] and not desktop_values[-1]:
+if (
+    not mobile_values[-1]
+    and not desktop_values[-1]
+    and not (
+        IS_AFTER365_PAGE
+        and st.session_state.get("nanpin_result_signature") is not None
+    )
+):
     with st.container(key="mobile_initial_banners"):
         render_app_banners(
             mobile_values[0], "mobile", mobile_values[4].year,
@@ -2036,7 +2638,7 @@ if run:
             st.info(
                 f"浅漬け株価：{threshold:,.0f}円（最長{light_pickling_days}日）を基準にしています。"
             )
-        elif use_current_price:
+        elif use_current_price and not IS_AFTER365_PAGE:
             st.info(f"現在の株価（直近取引日の終値）：{threshold:,.0f}円を基準にしています。")
         if light_pickling_price:
             price_difference = current_market_price - threshold
@@ -2066,6 +2668,7 @@ if run:
                 "</p></div>",
                 unsafe_allow_html=True,
             )
+        after365_summary_slot = st.empty() if IS_AFTER365_PAGE else None
         if streaks.empty:
             st.warning("該当する取引日はありませんでした。")
             recent_graph_slot = st.empty()
@@ -2200,52 +2803,311 @@ if run:
                 ],
                 columns=["", *nanpin_columns],
             )
-            nanpin_styles = pd.DataFrame(
-                "", index=nanpin_display.index, columns=nanpin_display.columns
-            )
-            for nanpin_column in nanpin_columns:
-                if "-" in str(nanpin_display.at[3, nanpin_column]):
-                    nanpin_styles.at[3, nanpin_column] = (
-                        "color: #DC2626; font-weight: 700;"
-                    )
-                if "-" in str(nanpin_display.at[4, nanpin_column]):
-                    nanpin_styles.at[4, nanpin_column] = (
-                        "color: #DC2626; font-weight: 700;"
-                    )
-            styled_nanpin = nanpin_display.style.apply(
-                lambda _: nanpin_styles, axis=None
-            ).set_table_styles(TABLE_HEADER_STYLES)
-            mobile_nanpin_display = (
-                nanpin_display.set_index("").T.reset_index().rename(
-                    columns={"index": "投資段階"}
+            if IS_AFTER365_PAGE:
+                after365_display = build_after365_summary(
+                    prices, start_date, end_date
                 )
-            )
-            mobile_nanpin_styles = pd.DataFrame(
-                "", index=mobile_nanpin_display.index,
-                columns=mobile_nanpin_display.columns
-            )
-            for row_index in mobile_nanpin_display.index:
-                if "-" in str(mobile_nanpin_display.at[row_index, "平均取得株価"]):
-                    mobile_nanpin_styles.at[row_index, "平均取得株価"] = (
-                        "color: #DC2626; font-weight: 700;"
+                after365_event_details = build_after365_event_details(
+                    prices, start_date, end_date
+                )
+                current_year = date.today().year
+                use_mean_statistics = bool(
+                    st.session_state.get(
+                        f"{active_search_prefix}_after365_use_mean_statistics",
+                        True,
                     )
-                if "-" in str(mobile_nanpin_display.at[row_index, "損益"]):
-                    mobile_nanpin_styles.at[row_index, "損益"] = (
-                        "color: #DC2626; font-weight: 700;"
+                )
+                statistics_label = (
+                    "平均値" if use_mean_statistics else "中央値"
+                )
+                after365_average = calculate_after365_average(
+                    after365_display,
+                    current_year,
+                    method="mean" if use_mean_statistics else "median",
+                )
+                after365_display = after365_display.sort_values(
+                    "年数", ascending=False
+                ).reset_index(drop=True)
+                year_values = after365_display["年数"].copy()
+                lowest_values = after365_display["最安値"].copy()
+                current_year_rows = year_values.eq(f"{current_year}年")
+                if current_year_rows.any():
+                    current_lowest = float(lowest_values.loc[current_year_rows].iloc[-1])
+                else:
+                    current_lowest = float(lowest_values.dropna().iloc[-1])
+                after365_display["その後1年間の最高高値"] = [
+                    format_after365_price(
+                        value,
+                        lowest_value,
+                        (
+                            "after365-change-black"
+                            if abs(float(lowest_value) - current_lowest)
+                            / current_lowest
+                            * 100
+                            > 50
+                            else "after365-change-high"
+                        ),
                     )
-            styled_mobile_nanpin = mobile_nanpin_display.style.apply(
-                lambda _: mobile_nanpin_styles, axis=None
-            ).set_table_styles(TABLE_HEADER_STYLES)
-            table_height = 250
+                    + format_after365_event_detail(
+                        after365_event_details.get(str(year_value), {}).get(
+                            "highest"
+                        )
+                    )
+                    for value, lowest_value, year_value in zip(
+                        after365_display["その後1年間の最高高値"],
+                        lowest_values,
+                        year_values,
+                    )
+                ]
+                after365_display["その後1年間の最高安値"] = [
+                    format_after365_price(
+                        value,
+                        lowest_value,
+                        (
+                            "after365-change-black"
+                            if abs(float(lowest_value) - current_lowest)
+                            / current_lowest
+                            * 100
+                            > 50
+                            else "after365-change-low"
+                        ),
+                    )
+                    + format_after365_event_detail(
+                        after365_event_details.get(str(year_value), {}).get(
+                            "following_lowest"
+                        )
+                    )
+                    for value, lowest_value, year_value in zip(
+                        after365_display["その後1年間の最高安値"],
+                        lowest_values,
+                        year_values,
+                    )
+                ]
+                after365_display["最安値"] = [
+                    (
+                        "—"
+                        if pd.isna(value)
+                        else format_yen(value)
+                        + format_after365_event_detail(
+                            after365_event_details.get(str(year_value), {}).get(
+                                "lowest"
+                            )
+                        )
+                    )
+                    for value, year_value in zip(lowest_values, year_values)
+                ]
+                after365_display = after365_display.rename(columns={"年数": ""})
+                summary_row_index = len(after365_display)
+                if after365_average is not None:
+                    current_lowest = float(after365_average["current_lowest"])
+                    current_lowest_detail = after365_event_details.get(
+                        f"{current_year}年", {}
+                    ).get("lowest")
+                    current_lowest_date_text = "対象日"
+                    if current_lowest_detail is not None:
+                        current_lowest_date = current_lowest_detail[0]
+                        current_lowest_date_text = (
+                            f"{current_lowest_date.month}月"
+                            f"{current_lowest_date.day}日"
+                        )
+                    after365_display.loc[summary_row_index] = {
+                        "": (
+                            f'<span class="after365-average-line">'
+                            f"【{escape(company_name)}】の{current_year}年の最安値が"
+                            "</span>"
+                            '<span class="after365-average-line">'
+                            f"{current_lowest_date_text}の"
+                            f'<span class="after365-current-lowest">'
+                            f"{format_yen(current_lowest)}</span>"
+                            "だった場合</span>"
+                            '<span class="after365-average-line">'
+                            "その後1年間の株価の統計上の動きは…</span>"
+                        ),
+                        "最安値": "",
+                        "その後1年間の最高高値": (
+                            '<span class="after365-average-result-label">'
+                            "最安値から一年間の最高高値</span>"
+                            + '<span class="after365-average-result-price '
+                            'after365-change-high">'
+                            + '<span class="after365-average-prefix">'
+                            + statistics_label
+                            + "</span>"
+                            + format_yen(after365_average["average_high"])
+                            + "</span>"
+                            + format_after365_percent(
+                                after365_average["average_high"],
+                                current_lowest,
+                                "after365-change-high",
+                            )
+                        ),
+                        "その後1年間の最高安値": (
+                            '<span class="after365-average-result-label">'
+                            "最安値から一年間の最高安値</span>"
+                            + '<span class="after365-average-result-price '
+                            'after365-change-low">'
+                            + '<span class="after365-average-prefix">'
+                            + statistics_label
+                            + "</span>"
+                            + format_yen(after365_average["average_low"])
+                            + "</span>"
+                            + format_after365_percent(
+                                after365_average["average_low"],
+                                current_lowest,
+                                "after365-change-low",
+                            )
+                        ),
+                    }
+                after365_styles = pd.DataFrame(
+                    "background-color: #FFFFFF; font-weight: 700;",
+                    index=after365_display.index,
+                    columns=after365_display.columns,
+                )
+                for row_index in year_values.index:
+                    row_year = str(year_values.loc[row_index])
+                    row_lowest = lowest_values.loc[row_index]
+                    if row_year == f"{current_year}年":
+                        shade = "#FFFFFF"
+                        year_shade = "#FFF7ED"
+                        text_color = "#111111"
+                    else:
+                        gap_percent = (
+                            abs(float(row_lowest) - current_lowest) / current_lowest * 100
+                            if not pd.isna(row_lowest) and current_lowest
+                            else 0.0
+                        )
+                        if gap_percent <= 30:
+                            shade, text_color = "#F3F4F6", "#111111"
+                            year_shade = "#FCE3D2"
+                        elif gap_percent <= 50:
+                            shade, text_color = "#D1D5DB", "#111111"
+                            year_shade = "#F6C49F"
+                        else:
+                            shade, text_color = "#9CA3AF", "#111111"
+                            year_shade = "#EFA66D"
+                            after365_display.loc[row_index, ""] = (
+                                f"{row_year}&nbsp;"
+                                '<span class="after365-excluded-note">'
+                                "※底値に価格差があるため統計除外</span>"
+                            )
+                    after365_styles.loc[row_index, :] = (
+                        f"background-color: {shade} !important; "
+                        f"color: {text_color}; font-weight: 700;"
+                    )
+                    after365_styles.loc[row_index, ""] = (
+                        f"background-color: {year_shade} !important; "
+                        "color: #111111; font-weight: 700;"
+                    )
+                if after365_average is not None:
+                    after365_styles.loc[summary_row_index, :] = (
+                        "background-color: #FFF7ED !important; "
+                        "border-top: 3px solid #F59E0B; font-weight: 700;"
+                    )
+                    after365_styles.loc[summary_row_index, ""] += (
+                        " background-color: #FCE3D2 !important; color: #111111;"
+                    )
+                    after365_styles.loc[summary_row_index, "最安値"] += (
+                        " color: #111111 !important; font-weight: 700;"
+                    )
+                after365_styles.loc[:, "その後1年間の最高高値"] += (
+                    " color: #2563EB;"
+                )
+                after365_styles.loc[:, "その後1年間の最高安値"] += (
+                    " color: #DC2626;"
+                )
+                styled_after365_average = None
+                if after365_average is not None:
+                    after365_average_display = after365_display.loc[
+                        [summary_row_index]
+                    ].reset_index(drop=True)
+                    after365_average_styles = after365_styles.loc[
+                        [summary_row_index]
+                    ].reset_index(drop=True)
+                    styled_after365_average = after365_average_display.style.apply(
+                        lambda _: after365_average_styles, axis=None
+                    )
+                    after365_display = after365_display.drop(
+                        index=summary_row_index
+                    ).reset_index(drop=True)
+                    after365_styles = after365_styles.drop(
+                        index=summary_row_index
+                    ).reset_index(drop=True)
+                after365_table_styles = [
+                    {
+                        "selector": "th",
+                        "props": [
+                            ("background-color", "#FCE3D2 !important"),
+                            ("color", "#111111"),
+                            ("font-weight", "700"),
+                        ],
+                    }
+                ]
+                styled_nanpin = after365_display.style.apply(
+                    lambda _: after365_styles, axis=None
+                ).set_table_styles(after365_table_styles)
+                mobile_nanpin_display = after365_display
+                styled_mobile_nanpin = styled_nanpin
+                table_height = 68 * len(after365_display) + 42
+            else:
+                nanpin_styles = pd.DataFrame(
+                    "", index=nanpin_display.index, columns=nanpin_display.columns
+                )
+                for nanpin_column in nanpin_columns:
+                    if "-" in str(nanpin_display.at[3, nanpin_column]):
+                        nanpin_styles.at[3, nanpin_column] = (
+                            "color: #DC2626; font-weight: 700;"
+                        )
+                    if "-" in str(nanpin_display.at[4, nanpin_column]):
+                        nanpin_styles.at[4, nanpin_column] = (
+                            "color: #DC2626; font-weight: 700;"
+                        )
+                styled_nanpin = nanpin_display.style.apply(
+                    lambda _: nanpin_styles, axis=None
+                ).set_table_styles(TABLE_HEADER_STYLES)
+                mobile_nanpin_display = (
+                    nanpin_display.set_index("").T.reset_index().rename(
+                        columns={"index": "投資段階"}
+                    )
+                )
+                mobile_nanpin_styles = pd.DataFrame(
+                    "", index=mobile_nanpin_display.index,
+                    columns=mobile_nanpin_display.columns
+                )
+                for row_index in mobile_nanpin_display.index:
+                    if "-" in str(mobile_nanpin_display.at[row_index, "平均取得株価"]):
+                        mobile_nanpin_styles.at[row_index, "平均取得株価"] = (
+                            "color: #DC2626; font-weight: 700;"
+                        )
+                    if "-" in str(mobile_nanpin_display.at[row_index, "損益"]):
+                        mobile_nanpin_styles.at[row_index, "損益"] = (
+                            "color: #DC2626; font-weight: 700;"
+                        )
+                styled_mobile_nanpin = mobile_nanpin_display.style.apply(
+                    lambda _: mobile_nanpin_styles, axis=None
+                ).set_table_styles(TABLE_HEADER_STYLES)
+                table_height = 250
+            if IS_AFTER365_PAGE and styled_after365_average is not None:
+                with after365_summary_slot.container():
+                    render_after365_summary(
+                        styled_after365_average,
+                        int(after365_average["sample_count"]),
+                        use_mean_statistics,
+                    )
             with st.container(key="desktop_results_table"):
                 render_results_table(
                     styled_nanpin, table_height, limit_vertical_height=False
                 )
-                st.caption(
-                    "ナンピン株価は現在値から最終ナンピンの期間最安値まで"
-                    f"均等に設定し、最終購入後の平均取得株価が期間最安値から"
-                    f"{maximum_bottom_gap_percent}％以内に収まるよう投資額を配分しています。"
-                )
+                if IS_AFTER365_PAGE:
+                    st.caption(
+                        "各年の最安値を基準に、翌日から365日以内の最高高値・"
+                        "最高安値を表示しています。  \n"
+                        "背景色が濃いグレーな期間は統計外です。"
+                    )
+                else:
+                    st.caption(
+                        "ナンピン株価は現在値から最終ナンピンの期間最安値まで"
+                        f"均等に設定し、最終購入後の平均取得株価が期間最安値から"
+                        f"{maximum_bottom_gap_percent}％以内に収まるよう投資額を配分しています。"
+                    )
 
             with st.container(key="mobile_results_table"):
                 render_results_table(
@@ -2253,11 +3115,20 @@ if run:
                     38 * (len(mobile_nanpin_display) + 1) + 4,
                     limit_vertical_height=False,
                 )
-                st.caption(
-                    "ナンピン株価は現在値から最終ナンピンの期間最安値まで"
-                    f"均等に設定し、最終購入後の平均取得株価が期間最安値から"
-                    f"{maximum_bottom_gap_percent}％以内に収まるよう投資額を配分しています。"
-                )
+                if IS_AFTER365_PAGE:
+                    st.caption(
+                        "各年の最安値を基準に、翌日から365日以内の最高高値・"
+                        "最高安値を表示しています。  \n"
+                        "背景色が濃いグレーな期間は統計外です。"
+                    )
+                else:
+                    st.caption(
+                        "ナンピン株価は現在値から最終ナンピンの期間最安値まで"
+                        f"均等に設定し、最終購入後の平均取得株価が期間最安値から"
+                        f"{maximum_bottom_gap_percent}％以内に収まるよう投資額を配分しています。"
+                    )
+            if IS_AFTER365_PAGE:
+                full_graph_slot = st.empty()
             csv = display_streaks.to_csv(index=False).encode("utf-8-sig")
             st.download_button("結果をCSVで保存", csv, "nissan_price_streaks.csv", "text/csv")
 
@@ -2416,6 +3287,112 @@ if run:
             }
         )
 
+        after365_excluded_years: list[int] = []
+        after365_statistical_years: list[int] = []
+        statistics_pin_data = pd.DataFrame(
+            columns=["年", "種別", "日付", "株価"]
+        )
+        if IS_AFTER365_PAGE:
+            after365_excluded_years = [
+                int(str(row_year).removesuffix("年"))
+                for row_year, row_lowest in zip(year_values, lowest_values)
+                if str(row_year) != f"{current_year}年"
+                and not pd.isna(row_lowest)
+                and current_lowest
+                and abs(float(row_lowest) - current_lowest) / current_lowest > 0.5
+            ]
+            after365_statistical_years = [
+                int(str(row_year).removesuffix("年"))
+                for row_year, row_lowest in zip(year_values, lowest_values)
+                if str(row_year) != f"{current_year}年"
+                and not pd.isna(row_lowest)
+                and current_lowest
+                and abs(float(row_lowest) - current_lowest) / current_lowest <= 0.5
+            ]
+            statistics_pin_rows = []
+            pin_detail_keys = [
+                ("lowest", "最安値"),
+                ("highest", "その後1年間の最高高値"),
+                ("following_lowest", "その後1年間の最高安値"),
+            ]
+            for statistical_year in after365_statistical_years:
+                year_details = after365_event_details.get(
+                    f"{statistical_year}年", {}
+                )
+                for detail_key, detail_label in pin_detail_keys:
+                    detail = year_details.get(detail_key)
+                    if detail is None:
+                        continue
+                    event_date, event_price = detail
+                    statistics_pin_rows.append(
+                        {
+                            "年": f"{statistical_year}年",
+                            "種別": detail_label,
+                            "日付": event_date,
+                            "株価": event_price,
+                        }
+                    )
+            statistics_pin_data = pd.DataFrame(
+                statistics_pin_rows,
+                columns=["年", "種別", "日付", "株価"],
+            )
+        chart["統計対象外"] = chart["日付"].dt.year.isin(after365_excluded_years)
+        chart["統計連続区間"] = (
+            chart["統計対象外"].ne(chart["統計対象外"].shift()).cumsum()
+        )
+        chart_domain_start = pd.Timestamp(start_date)
+        chart_domain_end = pd.Timestamp(end_date)
+        shaded_ranges = [
+            {
+                "開始日": max(
+                    chart_domain_start,
+                    pd.Timestamp(year=excluded_year, month=1, day=1),
+                ),
+                "終了日": min(
+                    chart_domain_end,
+                    pd.Timestamp(year=excluded_year + 1, month=1, day=1),
+                ),
+            }
+            for excluded_year in after365_excluded_years
+        ]
+        if IS_AFTER365_PAGE:
+            chart_dates = sorted(
+                pd.Timestamp(value)
+                for value in pd.to_datetime(chart["日付"], errors="coerce")
+                .dropna()
+                .unique()
+            )
+            if chart_dates:
+                if chart_dates[0] > chart_domain_start:
+                    shaded_ranges.append(
+                        {"開始日": chart_domain_start, "終了日": chart_dates[0]}
+                    )
+                for previous_date, next_date in zip(chart_dates, chart_dates[1:]):
+                    if next_date - previous_date > pd.Timedelta(days=31):
+                        shaded_ranges.append(
+                            {"開始日": previous_date, "終了日": next_date}
+                        )
+                if chart_dates[-1] < chart_domain_end:
+                    shaded_ranges.append(
+                        {"開始日": chart_dates[-1], "終了日": chart_domain_end}
+                    )
+
+        merged_shaded_ranges = []
+        for shaded_range in sorted(shaded_ranges, key=lambda item: item["開始日"]):
+            if (
+                merged_shaded_ranges
+                and shaded_range["開始日"] <= merged_shaded_ranges[-1]["終了日"]
+            ):
+                merged_shaded_ranges[-1]["終了日"] = max(
+                    merged_shaded_ranges[-1]["終了日"], shaded_range["終了日"]
+                )
+            else:
+                merged_shaded_ranges.append(shaded_range.copy())
+        excluded_year_ranges = pd.DataFrame(
+            merged_shaded_ranges,
+            columns=["開始日", "終了日"],
+        )
+
         base = alt.Chart(chart).encode(
             x=alt.X(
                 "日付:T",
@@ -2448,6 +3425,118 @@ if run:
             ],
         )
         normal_line = base.mark_line(color="#2563EB", strokeWidth=2)
+        statistics_included_line = base.transform_filter(
+            alt.datum["統計対象外"] == False
+        ).mark_line(color="#2563EB", strokeWidth=2).encode(
+            detail="統計連続区間:N"
+        )
+        statistics_excluded_line = base.transform_filter(
+            alt.datum["統計対象外"] == True
+        ).mark_line(color="#111111", strokeWidth=2).encode(
+            detail="統計連続区間:N"
+        )
+        excluded_year_bands = alt.Chart(excluded_year_ranges).mark_rect(
+            color="#CBD5E1",
+            opacity=0.7,
+        ).encode(
+            x=alt.X(
+                "開始日:T",
+                title=None,
+                axis=alt.Axis(
+                    format="%Y年",
+                    tickCount="year",
+                    labelAngle=0,
+                    labelOverlap=False,
+                    domain=True,
+                    domainColor="#94A3B8",
+                    domainWidth=1,
+                ),
+                scale=alt.Scale(
+                    domain=[pd.Timestamp(start_date), pd.Timestamp(end_date)]
+                ),
+            ),
+            x2="終了日:T",
+        )
+        statistics_pin_color = alt.Color(
+            "種別:N",
+            scale=alt.Scale(
+                domain=[
+                    "最安値",
+                    "その後1年間の最高高値",
+                    "その後1年間の最高安値",
+                ],
+                range=["#16A34A", "#2563EB", "#DC2626"],
+            ),
+            legend=None,
+        )
+        statistics_pin_rules = alt.Chart(statistics_pin_data).mark_rule(
+            strokeWidth=1.5,
+            opacity=0.8,
+        ).encode(
+            x=alt.X(
+                "日付:T",
+                title=None,
+                axis=alt.Axis(
+                    format="%Y年",
+                    tickCount="year",
+                    labelAngle=0,
+                    labelOverlap=False,
+                    domain=True,
+                    domainColor="#94A3B8",
+                    domainWidth=1,
+                ),
+                scale=alt.Scale(
+                    domain=[pd.Timestamp(start_date), pd.Timestamp(end_date)]
+                ),
+            ),
+            color=statistics_pin_color,
+            tooltip=[
+                alt.Tooltip("年:N", title="統計年"),
+                alt.Tooltip("種別:N", title="区分"),
+                alt.Tooltip("日付:T", title="日付", format="%Y年%m月%d日"),
+                alt.Tooltip("株価:Q", title="株価（円）", format=",.0f"),
+            ],
+        )
+        statistics_pin_points = alt.Chart(statistics_pin_data).mark_point(
+            filled=True,
+            size=42,
+            stroke="#FFFFFF",
+            strokeWidth=1,
+        ).encode(
+            x=alt.X(
+                "日付:T",
+                title=None,
+                axis=alt.Axis(
+                    format="%Y年",
+                    tickCount="year",
+                    labelAngle=0,
+                    labelOverlap=False,
+                    domain=True,
+                    domainColor="#94A3B8",
+                    domainWidth=1,
+                ),
+                scale=alt.Scale(
+                    domain=[pd.Timestamp(start_date), pd.Timestamp(end_date)]
+                ),
+            ),
+            y=alt.Y(
+                "株価:Q",
+                title=f"{label}（円）",
+                axis=alt.Axis(
+                    domain=True,
+                    domainColor="#94A3B8",
+                    domainWidth=1,
+                ),
+                scale=alt.Scale(zero=False),
+            ),
+            color=statistics_pin_color,
+            tooltip=[
+                alt.Tooltip("年:N", title="統計年"),
+                alt.Tooltip("種別:N", title="区分"),
+                alt.Tooltip("日付:T", title="日付", format="%Y年%m月%d日"),
+                alt.Tooltip("株価:Q", title="株価（円）", format=",.0f"),
+            ],
+        )
         above_initial_average_line = alt.Chart(above_price_points).mark_line(
             color="#E67E22", strokeWidth=2, strokeCap="butt"
         ).encode(
@@ -2576,9 +3665,34 @@ if run:
             text="表示:N",
             color=alt.Color("線色:N", scale=None, legend=None),
         )
-        recent_end = chart["日付"].max()
-        recent_start = recent_end - pd.DateOffset(years=1)
-        recent_chart = chart[chart["日付"] >= recent_start].copy()
+        chart_end = chart["日付"].max()
+        current_year_mask = chart["日付"].dt.year.eq(date.today().year)
+        if IS_AFTER365_PAGE and current_year_mask.any():
+            current_year_low_index = chart.loc[current_year_mask, "株価"].idxmin()
+            current_year_low_date = pd.Timestamp(
+                chart.loc[current_year_low_index, "日付"]
+            )
+            recent_start = pd.Timestamp(
+                year=current_year_low_date.year, month=1, day=1
+            )
+            recent_end = current_year_low_date + pd.DateOffset(years=1)
+        else:
+            recent_end = chart_end
+            recent_start = recent_end - pd.DateOffset(years=1)
+        recent_display_end = (
+            recent_end + pd.DateOffset(months=1)
+            if IS_AFTER365_PAGE
+            else recent_end
+        )
+        recent_chart = chart[
+            (chart["日付"] >= recent_start) & (chart["日付"] <= recent_end)
+        ].copy()
+        if IS_AFTER365_PAGE and current_year_mask.any():
+            recent_chart["今年最安値以降"] = (
+                recent_chart["日付"] >= current_year_low_date
+            )
+        else:
+            recent_chart["今年最安値以降"] = False
         recent_above_price_points = above_price_points[
             above_price_points["日付"] >= recent_start
         ].copy()
@@ -2618,6 +3732,30 @@ if run:
             text="表示:N",
             color=alt.Color("線色:N", scale=None, legend=None),
         )
+        recent_y_scale = alt.Scale(zero=False)
+        current_low_marker_label_y = None
+        if IS_AFTER365_PAGE and after365_average is not None:
+            recent_y_values = recent_chart["株価"].dropna().astype(float).tolist()
+            recent_y_values.extend(
+                [
+                    float(after365_average["average_high"]),
+                    float(after365_average["average_low"]),
+                ]
+            )
+            recent_y_min = min(recent_y_values)
+            recent_y_max = max(recent_y_values)
+            recent_y_span = max(recent_y_max - recent_y_min, 1.0)
+            recent_y_domain_min = max(
+                0.0, recent_y_min - recent_y_span * 0.08
+            )
+            recent_y_domain_max = recent_y_max + recent_y_span * 0.30
+            recent_y_scale = alt.Scale(
+                zero=False,
+                domain=[recent_y_domain_min, recent_y_domain_max],
+            )
+            current_low_marker_label_y = (
+                recent_y_domain_min + recent_y_domain_max
+            ) / 2
         recent_base = alt.Chart(recent_chart).encode(
             x=alt.X(
                 "日付:T",
@@ -2631,7 +3769,7 @@ if run:
                     domainColor="#94A3B8",
                     domainWidth=1,
                 ),
-                scale=alt.Scale(domain=[recent_start, recent_end]),
+                scale=alt.Scale(domain=[recent_start, recent_display_end]),
             ),
             y=alt.Y(
                 "株価:Q",
@@ -2641,7 +3779,7 @@ if run:
                     domainColor="#94A3B8",
                     domainWidth=1,
                 ),
-                scale=alt.Scale(zero=False),
+                scale=recent_y_scale,
             ),
             tooltip=[
                 alt.Tooltip("日付:T", title="日付", format="%Y年%m月%d日"),
@@ -2649,6 +3787,465 @@ if run:
             ],
         )
         recent_normal_line = recent_base.mark_line(color="#2563EB", strokeWidth=2)
+        recent_after_current_low_line = recent_base.transform_filter(
+            alt.datum["今年最安値以降"] == True
+        ).mark_line(color="#DC2626", strokeWidth=2)
+        average_projection_lines = None
+        future_projection_background = None
+        average_projection_mountain = None
+        average_projection_question = None
+        average_projection_deadline_backgrounds = None
+        average_projection_deadline_labels = None
+        average_projection_value_backgrounds = None
+        average_projection_value_labels = None
+        current_low_marker_line = None
+        current_low_marker_label_background = None
+        current_low_marker_label = None
+        one_year_marker_line = None
+        one_year_marker_label_background = None
+        one_year_marker_label = None
+        if IS_AFTER365_PAGE and after365_average is not None:
+            future_projection_background = alt.Chart(
+                pd.DataFrame(
+                    {
+                        "開始日": [chart_end],
+                        "終了日": [recent_display_end],
+                    }
+                )
+            ).mark_rect(
+                color="#FEF9C3",
+                opacity=0.25,
+            ).encode(
+                x=alt.X(
+                    "開始日:T",
+                    title=None,
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                x2="終了日:T",
+            )
+            projection_label_date = chart_end + (recent_end - chart_end) / 2
+            projection_deadline = (
+                f"{recent_end.year}年{recent_end.month}月{recent_end.day}日までに"
+            )
+            observed_after_low = prices.loc[
+                (prices.index >= current_year_low_date)
+                & (prices.index <= chart_end)
+            ]
+            achieved_high_dates = observed_after_low.index[
+                observed_after_low["High"].ge(
+                    float(after365_average["average_high"])
+                )
+            ]
+            high_achieved = len(achieved_high_dates) > 0
+            high_achieved_date_text = projection_deadline
+            if high_achieved:
+                high_achieved_date = pd.Timestamp(achieved_high_dates[0])
+                high_achieved_date_text = (
+                    f"{high_achieved_date.year}年{high_achieved_date.month}月"
+                    f"{high_achieved_date.day}日に"
+                )
+            projection_data = pd.DataFrame(
+                [
+                    {
+                        "開始日": current_year_low_date,
+                        "終了日": recent_end,
+                        "平均株価": float(after365_average["average_high"]),
+                        "線色": "#2563EB",
+                        "文字色": "#2563EB",
+                        "区分": "最安値から一年間の最高高値",
+                        "ラベル位置": projection_label_date,
+                        "期限表示": high_achieved_date_text,
+                        "予想表示": (
+                            f"すでに{statistics_label}達成済みです"
+                            if high_achieved
+                            else (
+                                f"{statistics_label}"
+                                f"{format_yen(after365_average['average_high'])}"
+                                "まで上がるかも"
+                            )
+                        ),
+                    },
+                    {
+                        "開始日": current_year_low_date,
+                        "終了日": recent_end,
+                        "平均株価": float(after365_average["average_low"]),
+                        "線色": "#DC2626",
+                        "文字色": "#DC2626",
+                        "区分": "最安値から一年間の最高安値",
+                        "ラベル位置": projection_label_date,
+                        "期限表示": projection_deadline,
+                        "予想表示": (
+                            f"{statistics_label}{format_yen(after365_average['average_low'])}"
+                            "まで下がるかも"
+                        ),
+                    },
+                ]
+            )
+            projection_duration = recent_end - chart_end
+            latest_actual_price = float(
+                recent_chart.sort_values("日付").iloc[-1]["株価"]
+            )
+            projected_high = float(after365_average["average_high"])
+            projected_low = float(after365_average["average_low"])
+            projected_range = projected_high - projected_low
+            projection_mountain_data = pd.DataFrame(
+                [
+                    {
+                        "日付": chart_end,
+                        "株価": latest_actual_price,
+                        "順番": 0,
+                    },
+                    {
+                        "日付": chart_end + projection_duration * 0.08,
+                        "株価": projected_low + projected_range * 0.45,
+                        "順番": 1,
+                    },
+                    {
+                        "日付": chart_end + projection_duration * 0.14,
+                        "株価": projected_low + projected_range * 0.28,
+                        "順番": 2,
+                    },
+                    {
+                        "日付": chart_end + projection_duration * 0.20,
+                        "株価": projected_low + projected_range * 0.55,
+                        "順番": 3,
+                    },
+                    {
+                        "日付": chart_end + projection_duration * 0.26,
+                        "株価": projected_low + projected_range * 0.35,
+                        "順番": 4,
+                    },
+                    {
+                        "日付": chart_end + projection_duration * 0.38,
+                        "株価": projected_high,
+                        "順番": 5,
+                    },
+                    {
+                        "日付": chart_end + projection_duration * 0.50,
+                        "株価": projected_low,
+                        "順番": 6,
+                    },
+                ]
+            )
+            average_projection_mountain = alt.Chart(
+                projection_mountain_data
+            ).mark_line(
+                color="#FACC15",
+                strokeWidth=2,
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    title=None,
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                y=alt.Y(
+                    "株価:Q",
+                    title=f"{label}（円）",
+                    scale=recent_y_scale,
+                ),
+                order=alt.Order("順番:Q"),
+                tooltip=[
+                    alt.Tooltip("日付:T", title="予測位置", format="%Y年%m月%d日"),
+                    alt.Tooltip("株価:Q", title=f"{statistics_label}株価", format=",.0f"),
+                ],
+            )
+            projection_question_data = pd.DataFrame(
+                {
+                    "日付": [chart_end + projection_duration * 0.58],
+                    "株価": [
+                        float(after365_average["average_low"])
+                        + (
+                            float(after365_average["average_high"])
+                            - float(after365_average["average_low"])
+                        )
+                        * 0.52
+                    ],
+                    "表示": ["？"],
+                }
+            )
+            average_projection_question = alt.Chart(
+                projection_question_data
+            ).mark_text(
+                color="#FACC15",
+                fontSize=52,
+                fontWeight="bold",
+                stroke="#FFFFFF",
+                strokeWidth=3,
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    title=None,
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                y=alt.Y(
+                    "株価:Q",
+                    title=f"{label}（円）",
+                    scale=recent_y_scale,
+                ),
+                text="表示:N",
+            )
+            average_projection_lines = alt.Chart(projection_data).mark_rule(
+                strokeWidth=5,
+                strokeCap="round",
+            ).encode(
+                x=alt.X(
+                    "開始日:T",
+                    title=None,
+                    axis=alt.Axis(
+                        format="%m月",
+                        tickCount="month",
+                        labelAngle=0,
+                        labelOverlap=False,
+                        domain=True,
+                        domainColor="#94A3B8",
+                        domainWidth=1,
+                    ),
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                x2="終了日:T",
+                y=alt.Y(
+                    "平均株価:Q",
+                    title=f"{label}（円）",
+                    axis=alt.Axis(
+                        domain=True,
+                        domainColor="#94A3B8",
+                        domainWidth=1,
+                    ),
+                    scale=recent_y_scale,
+                ),
+                color=alt.Color("線色:N", scale=None, legend=None),
+                tooltip=[
+                    alt.Tooltip("区分:N", title="区分"),
+                    alt.Tooltip(
+                        "平均株価:Q",
+                        title=f"{statistics_label}株価",
+                        format=",.0f",
+                    ),
+                ],
+            )
+            projection_label_encoding = {
+                "x": alt.X(
+                    "ラベル位置:T",
+                    title=None,
+                    axis=alt.Axis(
+                        format="%m月",
+                        tickCount="month",
+                        labelAngle=0,
+                        labelOverlap=False,
+                        domain=True,
+                        domainColor="#94A3B8",
+                        domainWidth=1,
+                    ),
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                "y": alt.Y(
+                    "平均株価:Q",
+                    title=f"{label}（円）",
+                    axis=alt.Axis(
+                        domain=True,
+                        domainColor="#94A3B8",
+                        domainWidth=1,
+                    ),
+                    scale=recent_y_scale,
+                ),
+                "color": alt.Color("文字色:N", scale=None, legend=None),
+            }
+            projection_background_encoding = {
+                key: value
+                for key, value in projection_label_encoding.items()
+                if key != "color"
+            }
+            average_projection_deadline_backgrounds = alt.Chart(
+                projection_data
+            ).mark_text(
+                dy=-43,
+                fontSize=16,
+                fontWeight="bold",
+                color="#FFFFFF",
+                stroke="#FFFFFF",
+                strokeWidth=8,
+                strokeJoin="round",
+            ).encode(
+                **projection_background_encoding,
+                text="期限表示:N",
+            )
+            average_projection_deadline_labels = alt.Chart(
+                projection_data
+            ).mark_text(
+                dy=-43,
+                fontSize=16,
+                fontWeight="bold",
+            ).encode(
+                **projection_label_encoding,
+                text="期限表示:N",
+            )
+            average_projection_value_backgrounds = alt.Chart(
+                projection_data
+            ).mark_text(
+                dy=-22,
+                fontSize=16,
+                fontWeight="bold",
+                color="#FFFFFF",
+                stroke="#FFFFFF",
+                strokeWidth=8,
+                strokeJoin="round",
+            ).encode(
+                **projection_background_encoding,
+                text="予想表示:N",
+            )
+            average_projection_value_labels = alt.Chart(projection_data).mark_text(
+                dy=-22,
+                fontSize=16,
+                fontWeight="bold",
+            ).encode(
+                **projection_label_encoding,
+                text="予想表示:N",
+            )
+            current_low_marker_data = pd.DataFrame(
+                {
+                    "日付": [current_year_low_date],
+                    "株価": [current_low_marker_label_y],
+                    "表示": ["最安値"],
+                }
+            )
+            current_low_marker_line = alt.Chart(current_low_marker_data).mark_rule(
+                color="#DC2626",
+                strokeWidth=2,
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                )
+            )
+            current_low_marker_label_background = alt.Chart(
+                current_low_marker_data
+            ).mark_text(
+                color="#FFFFFF",
+                stroke="#FFFFFF",
+                strokeWidth=8,
+                strokeJoin="round",
+                fontSize=14,
+                fontWeight="bold",
+                align="center",
+                dx=0,
+                dy=0,
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                y=alt.Y("株価:Q", scale=recent_y_scale),
+                text="表示:N",
+            )
+            current_low_marker_label = alt.Chart(current_low_marker_data).mark_text(
+                color="#DC2626",
+                fontSize=14,
+                fontWeight="bold",
+                align="center",
+                dx=0,
+                dy=0,
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                y=alt.Y("株価:Q", scale=recent_y_scale),
+                text="表示:N",
+            )
+            one_year_marker_data = pd.DataFrame(
+                {
+                    "日付": [recent_end],
+                    "株価": [current_low_marker_label_y],
+                    "表示": ["一年経過"],
+                }
+            )
+            one_year_marker_line = alt.Chart(one_year_marker_data).mark_rule(
+                color="#DC2626",
+                strokeWidth=2,
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                )
+            )
+            one_year_marker_label_background = alt.Chart(
+                one_year_marker_data
+            ).mark_text(
+                color="#FFFFFF",
+                stroke="#FFFFFF",
+                strokeWidth=8,
+                strokeJoin="round",
+                fontSize=14,
+                fontWeight="bold",
+                align="center",
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                y=alt.Y("株価:Q", scale=recent_y_scale),
+                text="表示:N",
+            )
+            one_year_marker_label = alt.Chart(one_year_marker_data).mark_text(
+                color="#DC2626",
+                fontSize=14,
+                fontWeight="bold",
+                align="center",
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                y=alt.Y("株価:Q", scale=recent_y_scale),
+                text="表示:N",
+            )
+            current_marker_data = pd.DataFrame(
+                {
+                    "日付": [chart_end],
+                    "株価": [current_low_marker_label_y],
+                    "表示": ["現在"],
+                }
+            )
+            current_marker_line = alt.Chart(current_marker_data).mark_rule(
+                color="#FACC15",
+                strokeWidth=3,
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                )
+            )
+            current_marker_label_background = alt.Chart(
+                current_marker_data
+            ).mark_text(
+                color="#FFFFFF",
+                stroke="#FFFFFF",
+                strokeWidth=8,
+                strokeJoin="round",
+                fontSize=14,
+                fontWeight="bold",
+                align="center",
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                y=alt.Y("株価:Q", scale=recent_y_scale),
+                text="表示:N",
+            )
+            current_marker_label = alt.Chart(current_marker_data).mark_text(
+                color="#EAB308",
+                fontSize=14,
+                fontWeight="bold",
+                align="center",
+            ).encode(
+                x=alt.X(
+                    "日付:T",
+                    scale=alt.Scale(domain=[recent_start, recent_display_end]),
+                ),
+                y=alt.Y("株価:Q", scale=recent_y_scale),
+                text="表示:N",
+            )
         recent_above_initial_average_line = alt.Chart(
             recent_above_price_points
         ).mark_line(
@@ -2666,7 +4263,7 @@ if run:
                     domainColor="#94A3B8",
                     domainWidth=1,
                 ),
-                scale=alt.Scale(domain=[recent_start, recent_end]),
+                scale=alt.Scale(domain=[recent_start, recent_display_end]),
             ),
             y=alt.Y(
                 "株価:Q",
@@ -2692,7 +4289,7 @@ if run:
             x=alt.X(
                 "開始日:T",
                 axis=None,
-                scale=alt.Scale(domain=[recent_start, recent_end]),
+                scale=alt.Scale(domain=[recent_start, recent_display_end]),
             ),
             x2="終了日:T",
             y=alt.Y("開始株価:Q", axis=None, scale=alt.Scale(zero=False)),
@@ -2708,7 +4305,7 @@ if run:
             {
                 "月初": pd.date_range(
                     start=recent_start.normalize(),
-                    end=recent_end.normalize(),
+                    end=recent_display_end.normalize(),
                     freq="MS",
                 )
             }
@@ -2823,14 +4420,42 @@ if run:
             f"期間：{format_month_ja(start_date)}～{format_month_ja(end_date)}"
             "</div>"
         )
-        full_period_chart = (
-            year_lines
-            + normal_line
-            + above_initial_average_line
-            + nanpin_price_lines
-            + nanpin_price_label_backgrounds
-            + nanpin_price_labels
-        ).properties(height=640)
+        full_period_exclusion_note = (
+            '<div class="full-period-exclusion-note" '
+            'style="margin:-0.35rem 0 0.45rem 0;color:#64748B;'
+            'font-size:13px;line-height:1.35;">'
+            '<div style="margin-bottom:0.1rem;">統計ピン</div>'
+            '<div style="display:flex;flex-wrap:wrap;gap:0.8rem;'
+            'align-items:center;margin-bottom:0.2rem;">'
+            '<span><span style="color:#16A34A;">●</span> 最安値</span>'
+            '<span><span style="color:#2563EB;">●</span> '
+            'その後1年間の最高高値</span>'
+            '<span><span style="color:#DC2626;">●</span> '
+            'その後1年間の最高安値</span>'
+            "</div>"
+            '<div>背景色が濃いグレーな期間は統計外です。</div>'
+            "</div>"
+            if IS_AFTER365_PAGE
+            else ""
+        )
+        if IS_AFTER365_PAGE:
+            full_period_chart = (
+                excluded_year_bands
+                + year_lines
+                + statistics_included_line
+                + statistics_excluded_line
+                + statistics_pin_rules
+                + statistics_pin_points
+            ).properties(height=480)
+        else:
+            full_period_chart = (
+                year_lines
+                + normal_line
+                + above_initial_average_line
+                + nanpin_price_lines
+                + nanpin_price_label_backgrounds
+                + nanpin_price_labels
+            ).properties(height=640)
         mobile_base = base.encode(
             x=alt.X(
                 "日付:T",
@@ -2848,6 +4473,16 @@ if run:
             )
         )
         mobile_normal_line = mobile_base.mark_line(color="#2563EB", strokeWidth=2)
+        mobile_statistics_included_line = mobile_base.transform_filter(
+            alt.datum["統計対象外"] == False
+        ).mark_line(color="#2563EB", strokeWidth=2).encode(
+            detail="統計連続区間:N"
+        )
+        mobile_statistics_excluded_line = mobile_base.transform_filter(
+            alt.datum["統計対象外"] == True
+        ).mark_line(color="#111111", strokeWidth=2).encode(
+            detail="統計連続区間:N"
+        )
         mobile_above_initial_average_line = alt.Chart(above_price_points).mark_line(
             color="#E67E22", strokeWidth=2, strokeCap="butt"
         ).encode(
@@ -2887,18 +4522,41 @@ if run:
             color=alt.Color("ナンピン線色:N", scale=None, legend=None),
             detail="ナンピン連続区間:N",
         )
-        mobile_full_period_chart = (
-            year_lines
-            + mobile_normal_line
-            + mobile_above_initial_average_line
-            + nanpin_price_lines
-            + nanpin_price_label_backgrounds
-            + nanpin_price_labels
-        ).properties(height=320)
+        if IS_AFTER365_PAGE:
+            mobile_full_period_chart = (
+                excluded_year_bands
+                + year_lines
+                + mobile_statistics_included_line
+                + mobile_statistics_excluded_line
+                + statistics_pin_rules
+                + statistics_pin_points
+            ).properties(height=320)
+        else:
+            mobile_full_period_chart = (
+                year_lines
+                + mobile_normal_line
+                + mobile_above_initial_average_line
+                + nanpin_price_lines
+                + nanpin_price_label_backgrounds
+                + nanpin_price_labels
+            ).properties(height=320)
         with full_graph_slot.container():
             with st.container(key="desktop_full_period_graph"):
                 st.markdown(full_period_title, unsafe_allow_html=True)
+                if full_period_exclusion_note:
+                    st.markdown(full_period_exclusion_note, unsafe_allow_html=True)
                 st.altair_chart(full_period_chart, use_container_width=True)
+            with st.container(key="mobile_full_period_graph"):
+                st.markdown(full_period_title, unsafe_allow_html=True)
+                if full_period_exclusion_note:
+                    st.markdown(full_period_exclusion_note, unsafe_allow_html=True)
+                st.vega_lite_chart(
+                    mobile_chart_spec(
+                        mobile_full_period_chart,
+                        hide_y_axis_title=True,
+                    ),
+                    use_container_width=True,
+                )
         full_statistics_period = (
             f"{format_month_ja(start_date)}～{format_month_ja(end_date)}"
         )
@@ -3249,53 +4907,97 @@ if run:
             "</div>"
         )
         with recent_graph_slot.container():
-            recent_chart_column, review_column = st.columns([12, 13])
-            with recent_chart_column:
-                st.markdown(
-                    '<div style="font-size:20px;font-weight:700;margin-left:48px;">'
-                    f"直近1年　【{escape(company_name)}】</div>",
-                    unsafe_allow_html=True,
+            if IS_AFTER365_PAGE:
+                recent_display_chart = (
+                    month_lines
+                    + recent_normal_line
+                    + recent_after_current_low_line
                 )
-                st.altair_chart(
-                    (
+                if future_projection_background is not None:
+                    recent_display_chart = (
+                        future_projection_background + recent_display_chart
+                    )
+                if average_projection_lines is not None:
+                    recent_display_chart += (
+                        average_projection_lines
+                        + average_projection_mountain
+                        + average_projection_question
+                        + average_projection_deadline_backgrounds
+                        + average_projection_deadline_labels
+                        + average_projection_value_backgrounds
+                        + average_projection_value_labels
+                        + current_low_marker_line
+                        + current_low_marker_label_background
+                        + current_low_marker_label
+                        + one_year_marker_line
+                        + one_year_marker_label_background
+                        + one_year_marker_label
+                        + current_marker_line
+                        + current_marker_label_background
+                        + current_marker_label
+                    )
+                recent_display_chart = recent_display_chart.properties(height=320)
+                recent_period_title = (
+                    '<div class="recent-period-title" style="font-size:20px;'
+                    'font-weight:700;margin-left:48px;margin-top:0.25rem;'
+                    'margin-bottom:0.65rem;line-height:1.35;">'
+                    f"{date.today().year}年1月～　【{escape(company_name)}】</div>"
+                )
+                with st.container(key="desktop_recent_period_graph"):
+                    st.markdown(recent_period_title, unsafe_allow_html=True)
+                    st.altair_chart(recent_display_chart, use_container_width=True)
+                with st.container(key="mobile_recent_period_graph"):
+                    st.markdown(recent_period_title, unsafe_allow_html=True)
+                    st.vega_lite_chart(
+                        mobile_chart_spec(
+                            recent_display_chart,
+                            hide_y_axis_title=True,
+                        ),
+                        use_container_width=True,
+                    )
+            else:
+                recent_chart_column, review_column = st.columns([12, 13])
+                with recent_chart_column:
+                    st.markdown(
+                        '<div style="font-size:20px;font-weight:700;margin-left:48px;">'
+                        f"直近1年　【{escape(company_name)}】</div>",
+                        unsafe_allow_html=True,
+                    )
+                    recent_display_chart = (
                         month_lines
                         + recent_normal_line
                         + recent_above_initial_average_line
                         + nanpin_price_lines
                         + recent_nanpin_price_label_backgrounds
                         + recent_nanpin_price_labels
-                    ).properties(height=320),
-                    use_container_width=True,
-                )
-                with st.container(key="mobile_full_period_graph"):
-                    st.markdown(full_period_title, unsafe_allow_html=True)
-                    st.altair_chart(mobile_full_period_chart, use_container_width=True)
-            with review_column:
-                with st.container(key="nanpin_indicator_card", border=True):
-                    st.markdown(review_header_html, unsafe_allow_html=True)
-                    with st.container(key="nanpin_plan_content"):
-                        review_text_column, allocation_column = st.columns(
-                            [2.2, 1], vertical_alignment="top"
-                        )
-                        with review_text_column:
-                            st.markdown(nanpin_review_html, unsafe_allow_html=True)
-                        with allocation_column:
-                            with st.container(key="nanpin_allocation_chart_desktop"):
-                                st.markdown(
-                                    '<div style="font-size:15px;font-weight:700;'
-                                    'text-align:center;margin-top:10px;">'
-                                    "投資資産の分布</div>",
-                                    unsafe_allow_html=True,
-                                )
-                                st.altair_chart(
-                                    allocation_chart, use_container_width=True
-                                )
-                            with st.container(key="nanpin_allocation_chart_mobile"):
-                                st.altair_chart(
-                                    mobile_allocation_chart, use_container_width=True
-                                )
-                    st.markdown(review_note_html, unsafe_allow_html=True)
-                    render_bottom_price_form(threshold)
+                    ).properties(height=320)
+                    st.altair_chart(recent_display_chart, use_container_width=True)
+                with review_column:
+                    with st.container(key="nanpin_indicator_card", border=True):
+                        st.markdown(review_header_html, unsafe_allow_html=True)
+                        with st.container(key="nanpin_plan_content"):
+                            review_text_column, allocation_column = st.columns(
+                                [2.2, 1], vertical_alignment="top"
+                            )
+                            with review_text_column:
+                                st.markdown(nanpin_review_html, unsafe_allow_html=True)
+                            with allocation_column:
+                                with st.container(key="nanpin_allocation_chart_desktop"):
+                                    st.markdown(
+                                        '<div style="font-size:15px;font-weight:700;'
+                                        'text-align:center;margin-top:10px;">'
+                                        "投資資産の分布</div>",
+                                        unsafe_allow_html=True,
+                                    )
+                                    st.altair_chart(
+                                        allocation_chart, use_container_width=True
+                                    )
+                                with st.container(key="nanpin_allocation_chart_mobile"):
+                                    st.altair_chart(
+                                        mobile_allocation_chart, use_container_width=True
+                                    )
+                        st.markdown(review_note_html, unsafe_allow_html=True)
+                        render_bottom_price_form(threshold)
         render_app_banners(security_code, active_search_prefix, start_date.year)
         render_company_info(company_name, ticker, company_info)
         scroll_to_result("search-results-anchor")

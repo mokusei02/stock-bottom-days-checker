@@ -283,20 +283,31 @@ def get_current_price(ticker: str) -> float:
     # individual search with "現在の株価" must use the quote available at the
     # time of the search.  The latest daily candle returned by Yahoo is updated
     # during market hours as well as after the close.
-    raw = yf.download(
-        ticker,
-        period="5d",
-        progress=False,
-        auto_adjust=False,
-        threads=False,
-    )
-    prices = normalize_prices(raw)
-    if prices.empty or "Close" not in prices.columns:
+    try:
+        raw = yf.download(
+            ticker,
+            period="5d",
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+        )
+        prices = normalize_prices(raw)
+        closes = (
+            prices["Close"].dropna()
+            if "Close" in prices.columns
+            else pd.Series(dtype=float)
+        )
+        if not closes.empty:
+            return float(closes.iloc[-1])
+    except Exception:
+        pass
+
+    revision, manifest = saved_snapshot()
+    entry = manifest["prices"].get(ticker)
+    if entry is None:
         raise RuntimeError("現在の株価を取得できませんでした。")
-    closes = prices["Close"].dropna()
-    if closes.empty:
-        raise RuntimeError("現在の株価を取得できませんでした。")
-    return float(closes.iloc[-1])
+    saved_prices = saved_price_frame(revision, ticker, entry)
+    return get_latest_close(saved_prices)
 
 
 def get_latest_close(prices: pd.DataFrame) -> float:
@@ -412,17 +423,21 @@ def render_app_banners(
         start_year = int(st.session_state.get(f"{key_prefix}_start_year_v2", 2015))
     nanpin_query = {"top": "1"}
     salt_query = {"top": "1"}
+    after365_query = {"top": "1"}
     if carry_conditions and security_code:
         nanpin_query["app_code"] = security_code
         salt_query["app_code"] = security_code
+        after365_query["app_code"] = security_code
     nanpin_href = "/nanpin?" + urlencode(nanpin_query)
     salt_href = "/?" + urlencode(salt_query)
+    after365_href = "/after365?" + urlencode(after365_query)
 
     render_index = getattr(render_app_banners, "_render_index", 0)
     render_app_banners._render_index = render_index + 1
     grid_key = f"app_banner_grid_{render_index}"
     nanpin_key = f"app_banner_nanpin_{render_index}"
     salt_key = f"app_banner_salt_{render_index}"
+    after365_key = f"app_banner_after365_{render_index}"
     nanpin_image = base64.b64encode(
         (assets / "absolute-safe-nanpin-banner.png").read_bytes()
     ).decode("ascii")
@@ -432,12 +447,13 @@ def render_app_banners(
     st.markdown(
         f"""
         <style>
-        .st-key-{grid_key} {{ width:70%; max-width:602px; margin:1.4rem 0; }}
+        .st-key-{grid_key} {{ width:100%; max-width:920px; margin:1.4rem 0; }}
         .st-key-{grid_key} [data-testid="stHorizontalBlock"] {{ gap:1rem; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a,
         .st-key-{salt_key} [data-testid="stPageLink"] a,
         .st-key-{nanpin_key} .app-banner-anchor,
-        .st-key-{salt_key} .app-banner-anchor {{
+        .st-key-{salt_key} .app-banner-anchor,
+        .st-key-{after365_key} .app-banner-anchor {{
             display:block;
             height:63px; padding:0; overflow:hidden; background:#fff center/contain no-repeat;
             border:2px solid #AEB5BF; border-radius:.65rem; box-sizing:border-box;
@@ -450,10 +466,19 @@ def render_app_banners(
         .st-key-{salt_key} .app-banner-anchor {{
             background-image:url("data:image/png;base64,{salt_image}");
         }}
+        .st-key-{after365_key} .app-banner-anchor {{
+            display:flex; align-items:center; justify-content:center;
+            color:#2563EB; font-size:clamp(1rem, 1.45vw, 1.35rem);
+            font-weight:800; text-decoration:none; white-space:nowrap;
+            background:#FFFFFF;
+        }}
+        .st-key-{after365_key} .app-banner-anchor::before {{ content:"📅"; margin-right:.35rem; }}
+        .st-key-{after365_key} .app-banner-anchor::after {{ content:"📅"; margin-left:.35rem; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a:hover,
         .st-key-{salt_key} [data-testid="stPageLink"] a:hover,
         .st-key-{nanpin_key} .app-banner-anchor:hover,
-        .st-key-{salt_key} .app-banner-anchor:hover {{ border-color:#2563EB; }}
+        .st-key-{salt_key} .app-banner-anchor:hover,
+        .st-key-{after365_key} .app-banner-anchor:hover {{ border-color:#2563EB; }}
         .st-key-{nanpin_key} [data-testid="stPageLink"] a [data-testid="stMarkdownContainer"],
         .st-key-{salt_key} [data-testid="stPageLink"] a [data-testid="stMarkdownContainer"] {{
             display:none !important;
@@ -469,14 +494,15 @@ def render_app_banners(
             .st-key-{nanpin_key} [data-testid="stPageLink"] a,
             .st-key-{salt_key} [data-testid="stPageLink"] a,
             .st-key-{nanpin_key} .app-banner-anchor,
-            .st-key-{salt_key} .app-banner-anchor {{ height:53px; }}
+            .st-key-{salt_key} .app-banner-anchor,
+            .st-key-{after365_key} .app-banner-anchor {{ height:53px; }}
         }}
         </style>
         """,
         unsafe_allow_html=True,
     )
     with st.container(key=grid_key):
-        nanpin_column, salt_column = st.columns(2)
+        nanpin_column, salt_column, after365_column = st.columns(3)
         with nanpin_column:
             with st.container(key=nanpin_key):
                 st.markdown(
@@ -489,6 +515,13 @@ def render_app_banners(
                 st.markdown(
                     f'<a class="app-banner-anchor" href="{salt_href}" '
                     'target="_self" aria-label="塩漬け日数チェッカー"></a>',
+                    unsafe_allow_html=True,
+                )
+        with after365_column:
+            with st.container(key=after365_key):
+                st.markdown(
+                    f'<a class="app-banner-anchor after365-banner-anchor" href="{after365_href}" '
+                    'target="_self" aria-label="最安値から365日後">最安値から365日後…</a>',
                     unsafe_allow_html=True,
                 )
 
@@ -1126,8 +1159,12 @@ components.html(
         const page = window.parent;
         if (!['127.0.0.1', 'localhost'].includes(page.location.hostname)) return;
         const controlId = 'local-view-switcher';
-        if (page.document.getElementById(controlId)) return;
-        const control = page.document.createElement('div');
+        let control = page.document.getElementById(controlId);
+        if (control) {
+            control.style.display = 'flex';
+            return;
+        }
+        control = page.document.createElement('div');
         control.id = controlId;
         control.innerHTML = `
             <span>表示確認（初期：PC版）</span>
@@ -1166,6 +1203,11 @@ components.html(
 st.markdown(
     """
     <style>
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    .stMainBlockContainer {
+        background-color: #F8FFF9;
+    }
     .st-key-mobile_filters { display: none; }
     [data-testid="stSidebarNav"] { display: none; }
     .st-key-mobile_ranking_controls { display: none; }
