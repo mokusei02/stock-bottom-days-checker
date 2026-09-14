@@ -1914,6 +1914,19 @@ st.markdown(
         width: fit-content;
         max-width: 100%;
     }
+    .st-key-desktop_recent_period_graph,
+    .st-key-mobile_recent_period_graph {
+        margin-bottom: 1.25rem;
+    }
+    .after365-table-note {
+        position: relative;
+        z-index: 2;
+        clear: both;
+        margin: 0 0 0.75rem;
+        color: #111111;
+        font-size: 0.875rem;
+        line-height: 1.55;
+    }
     .st-key-desktop_results_table .results-table-scroll table,
     .st-key-mobile_results_table .results-table-scroll table {
         width: auto;
@@ -3104,16 +3117,19 @@ if run:
                         use_mean_statistics,
                     )
             with st.container(key="desktop_results_table"):
+                if IS_AFTER365_PAGE:
+                    st.markdown(
+                        '<div class="after365-table-note">'
+                        "各年の最安値を基準に、翌日から365日以内の最高高値・"
+                        "最高安値を表示しています。<br>"
+                        "背景色が濃いグレーな期間は統計外です。"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
                 render_results_table(
                     styled_nanpin, table_height, limit_vertical_height=False
                 )
-                if IS_AFTER365_PAGE:
-                    st.caption(
-                        "各年の最安値を基準に、翌日から365日以内の最高高値・"
-                        "最高安値を表示しています。  \n"
-                        "背景色が濃いグレーな期間は統計外です。"
-                    )
-                else:
+                if not IS_AFTER365_PAGE:
                     st.caption(
                         "ナンピン株価は現在値から最終ナンピンの期間最安値まで"
                         f"均等に設定し、最終購入後の平均取得株価が期間最安値から"
@@ -3121,18 +3137,21 @@ if run:
                     )
 
             with st.container(key="mobile_results_table"):
+                if IS_AFTER365_PAGE:
+                    st.markdown(
+                        '<div class="after365-table-note">'
+                        "各年の最安値を基準に、翌日から365日以内の最高高値・"
+                        "最高安値を表示しています。<br>"
+                        "背景色が濃いグレーな期間は統計外です。"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
                 render_results_table(
                     styled_mobile_nanpin,
                     38 * (len(mobile_nanpin_display) + 1) + 4,
                     limit_vertical_height=False,
                 )
-                if IS_AFTER365_PAGE:
-                    st.caption(
-                        "各年の最安値を基準に、翌日から365日以内の最高高値・"
-                        "最高安値を表示しています。  \n"
-                        "背景色が濃いグレーな期間は統計外です。"
-                    )
-                else:
+                if not IS_AFTER365_PAGE:
                     st.caption(
                         "ナンピン株価は現在値から最終ナンピンの期間最安値まで"
                         f"均等に設定し、最終購入後の平均取得株価が期間最安値から"
