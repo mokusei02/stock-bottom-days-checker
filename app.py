@@ -1473,6 +1473,7 @@ st.markdown(
         backdrop-filter: blur(8px);
     }
     @media (max-width: 768px) {
+        html, body, body * { cursor: none !important; }
         .app-banner-grid {
             grid-template-columns: 1fr;
             gap: 0.7rem;

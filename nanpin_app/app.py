@@ -2047,6 +2047,7 @@ st.markdown(
         backdrop-filter: blur(8px);
     }
     @media (max-width: 768px) {
+        html, body, body * { cursor: none !important; }
         .after365-summary-only {
             width: 100% !important;
             max-width: 100% !important;
